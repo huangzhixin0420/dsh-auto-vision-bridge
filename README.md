@@ -24,6 +24,8 @@ dsh plugin --profile web add git+https://github.com/huangzhixin0420/dsh-auto-vis
 
 ## 配置
 
+Web 界面可直接进入「设置 → 自动视觉桥接」配置全部 9 项。该入口与「插件 → 已安装 → dsh-auto-vision-bridge → 组件 → 配置」复用宿主 `configForms.get("auto-vision-bridge")` 的同一配置存储，不创建副本；插件详情原有自动配置入口保留。
+
 配置命名空间为 `auto-vision-bridge`：
 
 ```yaml
@@ -74,7 +76,7 @@ pnpm install
 node --test tests/*.test.js
 ```
 
-测试使用 Node 内置 `node:test`，不需要真实视觉服务。覆盖消息桥接、多图与失败隔离、历史写回及重启幂等、pending 路由、准入生命周期、HTTP 错误、缓存、path/URL 旧行为、attachmentId 原图复核、参数校验零 I/O、附件失败、宿主服务接线以及 DOM 标记清理。2026-11-02 使用 Node 22.23.1 复跑：34 个顶层测试（含子测试共 38 项）通过、0 失败。
+测试使用 Node 内置 `node:test`，不需要真实视觉服务。覆盖消息桥接、多图与失败隔离、历史写回及重启幂等、pending 路由、准入生命周期、HTTP 错误、缓存、path/URL 旧行为、attachmentId 原图复核、参数校验零 I/O、附件失败、宿主服务接线、顶层设置 slot 与 9 字段配置复用、密钥控件以及 DOM 标记清理。2026-11-02 使用 Node 22.23.1 复跑：35 个顶层测试（含子测试共 39 项）通过、0 失败。
 
 本机验收实测：真实 c2a 验收 12/12 检查通过，覆盖绝对/cwd 相对路径、共享缓存、自动桥接与纯文本零增量；附件复核中，真实 DSH 附件存储读取 1 次，真实 c2a 针对性回答匹配唯一码；Web 宿主验收 26/26 检查通过，其中前 18 项由完整自动化产生，后 8 项由分步 CDP 复核产生。
 
