@@ -1,0 +1,66 @@
+{
+  "name": "dsh-auto-vision-bridge",
+  "version": "0.1.0",
+  "description": "DSH 文本模型图片自动转写桥接，并提供共享视觉客户端的 inspect_image 工具。",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "vision",
+    "image-transcription",
+    "openai-compatible"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/huangzhixin0420/dsh-auto-vision-bridge.git"
+  },
+  "homepage": "https://github.com/huangzhixin0420/dsh-auto-vision-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/huangzhixin0420/dsh-auto-vision-bridge/issues"
+  },
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    },
+    "compatibility": {
+      "dsh": ">=0.2.0-rc.2 <0.3.0 || 0.2.1-rc.1 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4 || 0.2.1-rc.5",
+      "node": ">=20.18",
+      "profiles": [
+        "web"
+      ]
+    }
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "lib"
+  ],
+  "engines": {
+    "node": ">=20.18"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.5"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": ">=0.2.0-rc.2 <0.3.0 || 0.2.1-rc.1 || 0.2.1-rc.2 || 0.2.1-rc.3 || 0.2.1-rc.4 || 0.2.1-rc.5"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "puppeteer-core": "25.16.0"
+  }
+}

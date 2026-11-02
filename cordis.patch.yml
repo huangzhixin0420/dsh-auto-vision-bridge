@@ -1,0 +1,4 @@
+# 标准 DSH bundle 入口；安装器据此挂载 Cordis 插件。
+- insert:
+    - id: auto-vision-bridge
+      name: dsh-auto-vision-bridge
