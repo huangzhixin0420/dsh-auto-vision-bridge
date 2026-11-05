@@ -16,7 +16,7 @@
 - 文本路由下懒修复历史 `user/message`，使用 `surfaceOp: replace` 和 `sourceEventSeqs`；写回失败会重试，已有标记不会重复识别。
 - 只包装 `llm.resolveModelInfo` 补上传准入，不碰 registration、adapter 或 `prepareCall`；支持 HMR 幂等和 dispose 恢复。
 - 仅注册一个 `inspect_image` 工具：`path` 支持本地绝对路径、会话 cwd 相对路径和 http(s) URL；`attachmentId` 支持针对用户附件重看原图。
-- `inspect_image` 支持多图：`path` 与 `attachmentId` 各自可传单个值或数组，两者也可同时提供（先 `path` 后 `attachmentId`）。多图并发识别，返回数组，每项与输入一一对应：
+- `inspect_image` 支持多图：`path` 与 `attachmentId` 各自可传单个值或数组，两者也可同时提供（先 `path` 后 `attachmentId`）。**检查多张图时请一次调用传数组**（插件会并发识别），不要每张图调一次；工具描述里已写明这一点。返回数组，每项与输入一一对应：
   - `index`：0 起的全局序号；`source`：`path` 或 `attachmentId`；`id`：原始输入值；
   - `ok` 为 true 时 `text` 是识别文本，为 false 时 `error` 是失败说明；
   - **单张失败不影响其余**：文件缺失、超限、附件未登记、识别失败都只让该条失败，其余照常返回；只有 `path` 与 `attachmentId` 都为空才算调用方式错误，直接报错。
