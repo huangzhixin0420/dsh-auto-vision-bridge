@@ -266,6 +266,28 @@ test("工具侧：转写较短时结果项不带 file 字段", async () => {
   }
 });
 
+test("工具侧：落盘文件名只取 basename，不带整条目录路径", async () => {
+  const dumpDir = await mkdtemp(join(tmpdir(), "avb-tool-"));
+  try {
+    const longText = "识别细节".repeat(300);
+    const h = harness({ "c2a/vision": longText });
+    const config = { ...h.config, dumpThreshold: 100, summaryLength: 60, dumpDir };
+    const tool = createInspectImageTool(identityDefineTool, {
+      ctx: h.ctx,
+      client: h.client,
+      getConfig: () => config,
+    });
+    const result = await tool.execute({ path: join(tempDir, "a.png") }, {
+      agent: { session: { header: { cwd: tempDir } } },
+    });
+    const name = result[0].file.split("/").pop();
+    assert.match(name, /^a\.png-[0-9a-f]{16}\.md$/, "文件名应为 basename + 哈希，不含目录");
+    assert.doesNotMatch(name, /tmp|Users|Development/);
+  } finally {
+    await rm(dumpDir, { recursive: true, force: true });
+  }
+});
+
 test("工具侧：渲染文本在有全文路径时明确指出", async () => {
   const h = harness();
   const tool = createInspectImageTool(identityDefineTool, {
