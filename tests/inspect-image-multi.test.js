@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createInspectImageTool } from "../lib/inspect-image.js";
-import { findUserImageAttachment } from "../lib/image-source.js";
+import { findUserImageAttachment, listSessionImages } from "../lib/image-source.js";
 import { VisionClient } from "../lib/vision-client.js";
 import { fakeAttachments, fakeLlm, identityDefineTool, testConfig } from "./helpers.js";
 
@@ -205,6 +205,61 @@ test("attachmentId 查找覆盖宿主的全部事件形态", async () => {
     assert.ok(found, `应命中：${name}`);
     assert.equal(found.attachmentId, ID);
   }
+});
+
+test("会话用 snapshotEvents() 方法暴露事件时也能命中（真实宿主形态）", async () => {
+  // 真实会话对象暴露的是 snapshotEvents()，不是 events 属性。
+  // 之前只读 .events，拿到空数组，表现为「附件永远找不到」。
+  const ID = "sha256:" + "c".repeat(64);
+  const ref = { attachmentId: ID, name: "a.png", mediaType: "image/png" };
+  const session = {
+    snapshotEvents() {
+      return [{ type: "user/message", data: { content: [{ type: "image", attachment: ref }] } }];
+    },
+  };
+  const found = findUserImageAttachment(session, ID);
+  assert.ok(found, "应通过 snapshotEvents() 命中");
+  assert.equal(found.attachmentId, ID);
+  assert.equal(found.name, "a.png");
+});
+
+test("会话同时有 events 与 snapshotEvents 时优先用 snapshotEvents", async () => {
+  const ID = "sha256:" + "d".repeat(64);
+  const ref = { attachmentId: ID, name: "b.png" };
+  const session = {
+    events: [{ type: "user/message", data: { content: [{ type: "text", text: "无关" }] } }],
+    snapshotEvents() {
+      return [{ type: "user/message", data: { content: [{ type: "image", attachment: ref }] } }];
+    },
+  };
+  const found = findUserImageAttachment(session, ID);
+  assert.ok(found, "应命中 snapshotEvents 里的图片");
+  assert.equal(found.attachmentId, ID);
+});
+
+test("snapshotEvents 抛异常时不炸，退回空结果", async () => {
+  const ID = "sha256:" + "e".repeat(64);
+  const session = {
+    snapshotEvents() { throw new Error("会话已关闭"); },
+  };
+  assert.equal(findUserImageAttachment(session, ID), undefined);
+});
+
+test("找不到附件时能列出会话里真实存在的图片，供模型自我纠正", async () => {
+  const ID = "sha256:" + "f".repeat(64);
+  const ref = { attachmentId: ID, name: "验证码.png", mediaType: "image/png" };
+  const session = {
+    snapshotEvents() {
+      return [
+        { type: "user/message", data: { content: [{ type: "image", attachment: ref }] } },
+        { type: "user/message", data: { content: [{ type: "text", text: "hi" }] } },
+      ];
+    },
+  };
+  const imgs = listSessionImages(session);
+  assert.equal(imgs.length, 1);
+  assert.equal(imgs[0].attachmentId, ID);
+  assert.equal(imgs[0].name, "验证码.png");
 });
 
 test("attachmentId 查找在事件里无图片时返回 undefined", async () => {
