@@ -1,29 +1,35 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { attachPreStepBridge, bridgeMessages, repairLoggedImages } from "../lib/bridge.js";
 import { BRIDGE_END, BRIDGE_START, failedTranscriptionBlock, stripBridgedText, transcriptionBlock } from "../lib/markers.js";
-import { attachment, imageMessage, imageOf, testConfig } from "./helpers.js";
+import { attachment, fakeAttachments, imageMessage, imageOf, testConfig } from "./helpers.js";
 
 function fixture(overrides = {}) {
   const reads = [];
   const recognitions = [];
-  const ctx = {
-    attachments: {
-      async readImage(ref) {
-        reads.push(ref.attachmentId);
-        return { ref, data: Buffer.from(`bytes:${ref.attachmentId}`) };
-      },
+  const admitted = [];
+  const attachments = fakeAttachments({
+    readImage(ref) {
+      reads.push(ref.attachmentId);
+      return { ref, data: Buffer.from(`bytes:${ref.attachmentId}`) };
     },
+  });
+  const ctx = {
+    attachments,
     get(name) { return this[name]; },
     logger: { info() {}, warn() {} },
   };
   const client = {
     async recognize(image) {
       recognitions.push(image.attachmentId);
+      admitted.push(image.attachmentRef);
       return `识别:${image.attachmentId}`;
     },
   };
-  return { ctx, client, reads, recognitions, getConfig: () => testConfig(), ...overrides };
+  return { ctx, client, reads, recognitions, admitted, getConfig: () => testConfig(), ...overrides };
 }
 
 test("纯文本消息保持同引用，且不读取附件、不调用视觉模型", async () => {
@@ -72,6 +78,35 @@ test("混合文字与多图保持原顺序，每张图各调用一次", async ()
   assert.strictEqual(result.content[4], b);
   assert.match(result.content[5].text, /识别:sha256:b/);
   assert.strictEqual(result.content[6], blocks[4]);
+});
+
+test("多图并发识别：请求重叠发起，结果仍按原顺序落位", async () => {
+  const f = fixture();
+  let active = 0;
+  let peak = 0;
+  const order = [];
+  f.client.recognize = async (image) => {
+    active++;
+    peak = Math.max(peak, active);
+    order.push(image.attachmentId);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    active--;
+    return `识别:${image.attachmentId}`;
+  };
+  const blocks = [
+    { type: "image", attachment: attachment("sha256:a", "a.png") },
+    { type: "image", attachment: attachment("sha256:b", "b.png") },
+    { type: "image", attachment: attachment("sha256:c", "c.png") },
+  ];
+  const [result] = await bridgeMessages([imageMessage(blocks)], f);
+  assert.equal(peak, 3);
+  assert.deepEqual(order.sort(), ["sha256:a", "sha256:b", "sha256:c"]);
+  assert.strictEqual(result.content[0], blocks[0]);
+  assert.match(result.content[1].text, /识别:sha256:a/);
+  assert.strictEqual(result.content[2], blocks[1]);
+  assert.match(result.content[3].text, /识别:sha256:b/);
+  assert.strictEqual(result.content[4], blocks[2]);
+  assert.match(result.content[5].text, /识别:sha256:c/);
 });
 
 test("单图失败注入明确失败标记，其他图片与文字继续", async () => {
@@ -273,5 +308,47 @@ test("没有实际 attachmentId 时不注入无法执行的复核提示", () => 
       assert.doesNotMatch(block.text, /复核提示|重看原图|调用 inspect_image/);
       assert.equal(stripBridgedText(block.text), "");
     }
+  }
+});
+
+
+test("转写过长时：转写块只留摘要，全文写进文件并带上路径", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "avb-bridge-"));
+  try {
+    const longText = "细节".repeat(400);
+    const f = fixture({
+      client: {
+        async recognize() { return longText; },
+      },
+      getConfig: () => ({ ...testConfig(), dumpThreshold: 100, summaryLength: 50, dumpDir: dir }),
+    });
+    const image = { type: "image", attachment: attachment("sha256:long", "long.png") };
+    const [result] = await bridgeMessages([imageMessage([image])], f);
+    const transcript = result.content.find((b) => b?.type === "text");
+    assert.ok(transcript, "应有转写块");
+    assert.ok(transcript.text.length < longText.length + 200, "转写块不应塞进全文");
+    assert.match(transcript.text, /转写全文过长，共 \d+ 字符，已存文件：/);
+    const file = transcript.text.match(/已存文件：(.+?)；/)?.[1];
+    assert.ok(file, "应能解析出文件路径");
+    assert.ok(file.startsWith(dir));
+    assert.equal(await readFile(file, "utf8"), longText);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("转写较短时：全文直接进转写块，不落盘", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "avb-bridge-"));
+  try {
+    const f = fixture({
+      getConfig: () => ({ ...testConfig(), dumpThreshold: 500, dumpDir: dir }),
+    });
+    const image = { type: "image", attachment: attachment("sha256:short", "short.png") };
+    const [result] = await bridgeMessages([imageMessage([image])], f);
+    const transcript = result.content.find((b) => b?.type === "text");
+    assert.match(transcript.text, /识别:sha256:short/);
+    assert.doesNotMatch(transcript.text, /已存文件/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
