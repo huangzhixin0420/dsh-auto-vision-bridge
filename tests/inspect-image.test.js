@@ -48,6 +48,10 @@ test("inspect_image 支持本地绝对路径与 cwd 相对路径，并返回视�
   assert.equal(tool.parameters.attachmentId.required, undefined);
   assert.match(INSPECT_IMAGE_DESCRIPTION, /attachmentId/);
   assert.match(INSPECT_IMAGE_DESCRIPTION, /screenshots/);
+  // 描述必须明确指示模型：多图时一次调用传数组，而不是每张图调一次。
+  assert.match(INSPECT_IMAGE_DESCRIPTION, /array/i);
+  assert.match(INSPECT_IMAGE_DESCRIPTION, /one call/i);
+  assert.match(INSPECT_IMAGE_DESCRIPTION, /concurrent/i);
   assert.doesNotMatch(INSPECT_IMAGE_DESCRIPTION, /user attachments are bridged automatically/i);
   const first = await tool.execute({ path: imagePath }, {});
   assert.deepEqual(first, [{ index: 0, source: "path", id: imagePath, ok: true, text: "视觉结果" }]);
