@@ -7,7 +7,7 @@ import { createInspectImageTool, INSPECT_IMAGE_DESCRIPTION } from "../lib/inspec
 import { loadLocalImage } from "../lib/image-source.js";
 import { bridgeMessages } from "../lib/bridge.js";
 import { VisionClient } from "../lib/vision-client.js";
-import { fakeAttachments, fakeLlm, identityDefineTool, testConfig } from "./helpers.js";
+import { fakeAttachments, fakeLlm, identityDefineTool, testConfig, transcriptionOf } from "./helpers.js";
 
 const tempDir = fileURLToPath(new URL("./.tmp/", import.meta.url));
 const imagePath = join(tempDir, "tiny.png");
@@ -175,10 +175,10 @@ test("inspect_image 按 attachmentId 经宿主服务读原图，并与自动桥�
   const client = new VisionClient(() => config, { ctx, llm });
   const getConfig = () => config;
   const imageBlock = { type: "image", attachment: ref };
-  const [bridged] = await bridgeMessages([{ role: "user", content: [imageBlock] }], {
+  const bridged = await bridgeMessages([{ role: "user", content: [imageBlock] }], {
     ctx, client, getConfig,
   });
-  assert.match(bridged.content[1].text, /首次转写/);
+  assert.match(transcriptionOf(bridged.messages[0]), /首次转写/);
 
   const tool = createInspectImageTool(identityDefineTool, { ctx, client, getConfig });
   const result = await tool.execute({ attachmentId: `  ${ref.attachmentId}  ` }, {

@@ -27,6 +27,57 @@
     return output;
   }
 
+  /**
+   * 跨节点清理转写标记。
+   *
+   * DSH 0.2.2 起把一段用户文本切成多个 <span class="_plainRun">（markdown
+   * 行内渲染与 dsh-message-quotes 都会切），START 与 END 于是落在不同的
+   * text node 里，单节点替换删不掉。这里按「同一父元素下的兄弟节点」
+   * 聚合处理：找到含 START 的节点后，向后找到含 END 的节点，把两者之间
+   * （含）的所有兄弟 text node 一起清掉。
+   *
+   * 返回被清空的节点列表，供调用方隐藏空容器。
+   */
+  function stripBridgedRange(startNode) {
+    var parent = startNode.parentElement;
+    if (!parent) return [];
+    var children = Array.prototype.slice.call(parent.childNodes);
+    var startIndex = children.indexOf(startNode);
+    if (startIndex === -1) return [];
+    var endIndex = -1;
+    for (var i = startIndex; i < children.length; i++) {
+      var node = children[i];
+      if (node.nodeType !== 3) continue;
+      if ((node.data || "").indexOf(END) === -1) continue;
+      endIndex = i;
+      break;
+    }
+    if (endIndex === -1) return [];
+    var cleared = [];
+    for (var j = startIndex; j <= endIndex; j++) {
+      var target = children[j];
+      if (target.nodeType !== 3) continue;
+      var data = target.data || "";
+      var endAt = data.indexOf(END);
+      // 结束标记所在节点：保留标记之后的内容；标记之前的内容属于转写段，
+      // 但同一节点里 START 之前的内容是用户文字，要留下。
+      if (endAt !== -1) {
+        var kept = data.slice(endAt + END.length);
+        // START 之前的部分若是用户文字（同节点场景），保留。
+        var startAt = data.indexOf(START);
+        if (startAt > 0) kept = data.slice(0, startAt) + kept;
+        if (data === kept) continue;
+        target.data = kept;
+        cleared.push(target);
+        continue;
+      }
+      if (data === "") continue;
+      target.data = "";
+      cleared.push(target);
+    }
+    return cleared;
+  }
+
   window.__ModuleLoader__.load({
     id: "dsh-auto-vision-bridge",
     factory: function (require) {
@@ -815,6 +866,12 @@
             var nodes = [];
             while (walker.nextNode()) nodes.push(walker.currentNode);
             for (var i = 0; i < nodes.length; i++) {
+              // 优先按跨节点范围清理：START 与 END 常落在不同的 text node。
+              var cleared = stripBridgedRange(nodes[i]);
+              if (cleared.length > 0) {
+                for (var j = 0; j < cleared.length; j++) hideEmptyBubble(cleared[j]);
+                continue;
+              }
               var cleaned = stripBridgedText(nodes[i].data);
               if (cleaned !== nodes[i].data) {
                 nodes[i].data = cleaned;
@@ -836,6 +893,7 @@
       // 无 DOM 依赖的测试出口，不影响宿主模块契约。
       exports.__test = {
         stripBridgedText,
+        stripBridgedRange,
         hideEmptyBubble,
         START,
         END,

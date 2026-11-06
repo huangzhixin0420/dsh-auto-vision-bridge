@@ -29,6 +29,24 @@ export function imageMessage(blocks, extra = {}) {
   };
 }
 
+/**
+ * 取一条消息的转写文本。
+ *
+ * 转写不再进 content（DSH 会把 content 的 text block 拼成用户气泡），
+ * 而是另存于消息的 transcription 字段，由模型侧注入。
+ */
+export function transcriptionOf(message) {
+  const value = message?.transcription;
+  return typeof value === "string" ? value : "";
+}
+
+/**
+ * 取消息里第 index 段转写（多图时每张图一段）。
+ */
+export function transcriptionPart(message, index = 0) {
+  return transcriptionOf(message).split("\n\n")[index] ?? "";
+}
+
 export function jsonResponse(value, init = {}) {
   return new Response(JSON.stringify(value), {
     status: 200,
