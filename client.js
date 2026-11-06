@@ -1222,9 +1222,16 @@
 
           // 初次扫描覆盖刷新后的持久消息；observer 覆盖后续流式/多图 DOM 更新。
           scan();
-          var observer = new MutationObserver(scan);
+          // 节流：观察器监听的是整个 body，流式输出时每秒几十次变更，
+          // 每次都跑一遍全树 TreeWalker 会把主线程占满，导致掉帧和视觉抖动。
+          // 清理旧标记不是实时需求，攒 300ms 扫一次足够。
+          var pending = 0;
+          var observer = new MutationObserver(function () {
+            if (pending) return;
+            pending = setTimeout(function () { pending = 0; scan(); }, 300);
+          });
           observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-          return function () { observer.disconnect(); };
+          return function () { if (pending) clearTimeout(pending); observer.disconnect(); };
         }, "auto-vision-bridge: 隐藏转写清理");
       }
 

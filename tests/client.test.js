@@ -142,6 +142,8 @@ async function loadClient(extra = {}) {
     document: { body: null },
     MutationObserver: class { observe() {} disconnect() {} },
     NodeFilter: { SHOW_TEXT: 4, FILTER_ACCEPT: 1, FILTER_REJECT: 2 },
+    // 清理器用 setTimeout 做节流，沙箱必须有真定时器。
+    setTimeout, clearTimeout,
     ...extra,
   };
   vm.runInNewContext(code, sandbox, { filename: "client.js" });
@@ -202,6 +204,8 @@ test("client 初次扫描覆盖刷新，MutationObserver 覆盖新增多文本�
 
   nodes.push({ data: `甲${marked}乙${marked}丙` });
   observer.callback();
+  // 清理器已改 300ms 节流：观察器回调只调度，不立即扫描。
+  await new Promise((resolve) => setTimeout(resolve, 350));
   assert.equal(nodes[1].data, "甲乙丙");
   ctx.disposers.at(-1)();
   assert.equal(observer.disconnected, true);
