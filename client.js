@@ -85,9 +85,13 @@
       var exports = module.exports;
       Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
       var jsxRuntime = require("react/jsx-runtime");
+      var react = require("react");
       var primitives = require("@deepseek-ai/dsh-client-ui-primitives");
       var jsx = jsxRuntime.jsx;
       var jsxs = jsxRuntime.jsxs;
+      // 识图历史页要订阅取数状态，用到 React 的两个基础钩子。
+      var useState = react.useState;
+      var useEffect = react.useEffect;
 
       var CSS = [
         ".avb-settings{padding:16px 0;border-bottom:.5px solid var(--dsw-alias-border-l2)}",
@@ -119,7 +123,24 @@
         ".avb-catalogGroupName{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}",
         ".avb-catalogRow{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}",
         ".avb-catalogModel{color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;display:flex;align-items:baseline;gap:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
-        ".avb-catalogTag{color:var(--dsw-alias-state-warn-label);font-size:11px;line-height:16px;white-space:nowrap}"
+        ".avb-catalogTag{color:var(--dsw-alias-state-warn-label);font-size:11px;line-height:16px;white-space:nowrap}",
+        // ---- 识图历史页 ----
+        // 页面自己滚：DSH 主面板槽整条链是 overflow:hidden，document 也不滚。
+        ".avbhist-page{display:flex;flex-direction:column;gap:12px;padding:16px 20px;min-width:0;flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior-y:contain}",
+        ".avbhist-title{margin:0;font-size:14px;line-height:20px}",
+        ".avbhist-desc{margin:4px 0 0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}",
+        ".avbhist-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:8px}",
+        ".avbhist-tile{border:.5px solid var(--dsw-alias-border-l3);border-radius:6px;padding:6px 8px;display:grid;gap:2px;min-width:0}",
+        ".avbhist-tileLabel{color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
+        ".avbhist-tileValue{color:var(--dsw-alias-label-primary);font-size:15px;line-height:20px;font-variant-numeric:tabular-nums}",
+        ".avbhist-section{margin:0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}",
+        ".avbhist-table{width:100%;border-collapse:collapse;font-size:12px;line-height:18px;table-layout:fixed}",
+        ".avbhist-table th{text-align:left;font-weight:500;color:var(--dsw-alias-label-secondary);padding:4px 6px;border-bottom:.5px solid var(--dsw-alias-border-l2);white-space:nowrap}",
+        ".avbhist-table td{padding:4px 6px;border-bottom:.5px solid var(--dsw-alias-border-l3);color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+        ".avbhist-ok{color:var(--dsw-alias-state-success-primary)}",
+        ".avbhist-fail{color:var(--dsw-alias-state-danger-label)}",
+        ".avbhist-empty{padding:12px 0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}",
+        "@media (max-width:640px){.avbhist-page{padding:12px 12px max(28px,calc(env(safe-area-inset-bottom,0px) + 16px));gap:10px}}"
       ].join("");
       if (typeof document !== "undefined" && typeof document.querySelector === "function"
         && document.querySelector("style[data-auto-vision-bridge-css]") === null) {
@@ -747,6 +768,7 @@
           valueField("cooldownMs", props, state, "熔断冷却时长（毫秒）", "熔断后暂停派发该模型的时长；结束后只放一个探测请求，成功即恢复。", true),
           valueField("dumpThreshold", props, state, "转写落盘阈值（字符）", "转写超过这个长度就只留摘要进上下文，全文写进临时目录并返回路径；0 表示不截断。", true),
           valueField("summaryLength", props, state, "截断后摘要长度（字符）", "转写被截断时，进上下文保留多少字符。", true),
+          valueField("historyRetentionDays", props, state, "识图历史保留天数", "识图历史（每张图片一条记录）的保留时长；0 表示不自动清理。", true),
           jsx(PoolEditor, {
             useAutoVision: props.useAutoVision,
             addEntry: props.addEntry,
@@ -851,8 +873,278 @@
         }, "auto-vision-bridge: 顶层设置入口");
       }
 
+      // ---- 识图历史视图（第一步：最小骨架）----
+      //
+      // 形态照抄 dsh-subagent-model-pool 的「模型池统计」：侧栏条目
+      // （sidebar.panellist）+ 独立主页面（main 槽 keyed）。
+      var HISTORY_PANEL_ID = "auto-vision-bridge-history";
+
+      /** 侧栏图标：放大镜 + 列表（内联 SVG，不依赖宿主图标组件集）。 */
+      function HistoryIcon(props) {
+        var size = props && props.size ? props.size : 18;
+        return jsxs("svg", {
+          width: size, height: size, viewBox: "0 0 24 24",
+          fill: "none", stroke: "currentColor", strokeWidth: 1.6,
+          strokeLinecap: "round", strokeLinejoin: "round",
+          "aria-hidden": "true",
+          children: [
+            jsx("circle", { key: "lens", cx: 10.5, cy: 10.5, r: 6 }),
+            jsx("line", { key: "handle", x1: 15, y1: 15, x2: 20, y2: 20 }),
+            jsx("line", { key: "r1", x1: 17, y1: 5, x2: 21, y2: 5 }),
+            jsx("line", { key: "r2", x1: 17, y1: 8.5, x2: 21, y2: 8.5 }),
+            jsx("line", { key: "r3", x1: 17, y1: 12, x2: 21, y2: 12 })
+          ]
+        });
+      }
+
+      /** 识图历史取数路由（浏览器相对路径）。 */
+      var HISTORY_ROUTE = "api/auto-vision-bridge.history";
+      /** 明细表最多显示的行数。 */
+      var HISTORY_ROWS = 20;
+
+      /** 格式化耗时。 */
+      function formatDuration(ms) {
+        var value = Number(ms);
+        if (!isFinite(value) || value < 0) return "—";
+        if (value < 1000) return Math.round(value) + " ms";
+        return (value / 1000).toFixed(2) + " s";
+      }
+
+      /** 格式化百分比。 */
+      function formatPercent(rate) {
+        var value = Number(rate);
+        if (!isFinite(value)) return "—";
+        return (value * 100).toFixed(1) + "%";
+      }
+
+      /** 格式化时间戳为「MM/DD HH:MM:SS」。 */
+      function formatTime(time) {
+        var value = Number(time);
+        if (!isFinite(value) || value <= 0) return "—";
+        var date = new Date(value);
+        var pad = function (n) { return n < 10 ? "0" + n : String(n); };
+        return (date.getMonth() + 1) + "/" + date.getDate() + " "
+          + pad(date.getHours()) + ":" + pad(date.getMinutes()) + ":" + pad(date.getSeconds());
+      }
+
+      /** 一次取数；失败给出中文提示而不是抛错。 */
+      function readHistory(signal) {
+        return fetch(HISTORY_ROUTE, { signal: signal, credentials: "same-origin" })
+          .then(function (response) {
+            if (!response.ok) throw new Error("HTTP " + response.status);
+            return response.json();
+          })
+          .catch(function (error) {
+            if (error && error.name === "AbortError") return null;
+            return { error: "读取识图历史失败：" + (error && error.message ? error.message : String(error)) };
+          });
+      }
+
+      /** 极简 store：getSnapshot / subscribe / load。 */
+      function createHistorySource() {
+        var listeners = [];
+        var snapshot = null;
+        var error = null;
+        var loading = false;
+        var controller = null;
+        var notify = function () {
+          for (var i = 0; i < listeners.length; i++) listeners[i]();
+        };
+        var load = function () {
+          if (controller !== null) controller.abort();
+          controller = new AbortController();
+          loading = true;
+          error = null;
+          notify();
+          readHistory(controller.signal).then(function (value) {
+            if (controller === null || controller.signal.aborted) return;
+            loading = false;
+            if (value === null) return;
+            if (value.error) error = value.error;
+            else snapshot = value;
+            notify();
+          });
+        };
+        return {
+          getSnapshot: function () {
+            return { snapshot: snapshot, error: error, loading: loading };
+          },
+          subscribe: function (listener) {
+            listeners.push(listener);
+            return function () {
+              var index = listeners.indexOf(listener);
+              if (index >= 0) listeners.splice(index, 1);
+            };
+          },
+          load: load
+        };
+      }
+
+      /** 合计条的一个小方块。 */
+      function HistoryTile(props) {
+        return jsxs("div", {
+          className: "avbhist-tile",
+          children: [
+            jsx("div", { key: "l", className: "avbhist-tileLabel", children: props.label }),
+            jsx("div", { key: "v", className: "avbhist-tileValue", children: props.value })
+          ]
+        });
+      }
+
+      /** 会话列的兜底显示：去掉 session- 前缀后取前 8 位。 */
+      function shortenSessionId(value) {
+        var text = String(value || "").trim();
+        if (!text) return "—";
+        return text.replace(/^session-/, "").slice(0, 8);
+      }
+
+      /** 明细表。 */
+      function HistoryTable(props) {
+        var rows = props.rows || [];
+        if (rows.length === 0) {
+          return jsx("div", { className: "avbhist-empty", children: "暂无识图记录。" });
+        }
+        var head = jsxs("tr", {
+          key: "h",
+          children: [
+            jsx("th", { key: "t", style: { width: "96px" }, children: "时间" }),
+            jsx("th", { key: "c", style: { width: "150px" }, children: "会话" }),
+            jsx("th", { key: "m", style: { width: "140px" }, children: "模型" }),
+            jsx("th", { key: "i", style: { width: "130px" }, children: "图片" }),
+            jsx("th", { key: "s", style: { width: "70px" }, children: "耗时" }),
+            jsx("th", { key: "r", children: "结果" })
+          ]
+        });
+        var body = rows.map(function (row, index) {
+          var ok = row.ok === true;
+          var label = row.imageName || row.attachmentId || "(未命名)";
+          var detail = ok ? "成功" : (row.error || "失败");
+          // 有标题（会话仍 live 且已生成）就用标题，否则退回短 id。
+          var sessionText = row.sessionTitle || shortenSessionId(row.sessionId);
+          return jsxs("tr", {
+            key: "r-" + index,
+            children: [
+              jsx("td", { key: "t", title: formatTime(row.time), children: formatTime(row.time) }),
+              jsx("td", { key: "c", title: sessionText, children: sessionText }),
+              jsx("td", {
+                key: "m",
+                title: (row.provider || "") + "/" + (row.model || ""),
+                children: (row.provider || "—") + "/" + (row.model || "—")
+              }),
+              jsx("td", { key: "i", title: label, children: label }),
+              jsx("td", { key: "s", children: formatDuration(row.durationMs) }),
+              jsx("td", {
+                key: "r",
+                className: ok ? "avbhist-ok" : "avbhist-fail",
+                title: detail,
+                children: ok ? "成功" : "失败"
+              })
+            ]
+          });
+        });
+        return jsxs("table", {
+          className: "avbhist-table",
+          children: [
+            jsx("thead", { key: "h", children: head }),
+            jsx("tbody", { key: "b", children: body })
+          ]
+        });
+      }
+
+      /** 识图历史主页面。 */
+      function HistoryPage(props) {
+        var state = props.useHistory();
+        var snapshot = state.snapshot;
+        var summary = snapshot && snapshot.summary ? snapshot.summary : null;
+        var records = snapshot && Array.isArray(snapshot.records) ? snapshot.records : [];
+        var children = [
+          jsx("h2", { key: "t", className: "avbhist-title", children: "识图历史" }),
+          jsx("p", {
+            key: "d",
+            className: "avbhist-desc",
+            children: "每张图片一条记录：实际派发的模型、耗时与结果。保留 "
+              + (snapshot && snapshot.retentionDays ? snapshot.retentionDays + " 天" : "若干天") + "。"
+          })
+        ];
+        if (state.error) {
+          children.push(jsx("div", { key: "e", className: "avbhist-empty", children: state.error }));
+        } else if (state.loading && !snapshot) {
+          children.push(jsx("div", { key: "l", className: "avbhist-empty", children: "读取中…" }));
+        } else {
+          if (summary) {
+            children.push(jsxs("div", {
+              key: "tiles",
+              className: "avbhist-tiles",
+              children: [
+                jsx(HistoryTile, { key: "total", label: "识图次数", value: String(summary.total) }),
+                jsx(HistoryTile, { key: "ok", label: "成功率", value: formatPercent(summary.successRate) }),
+                jsx(HistoryTile, { key: "fail", label: "失败", value: String(summary.failed) }),
+                jsx(HistoryTile, { key: "avg", label: "平均耗时", value: formatDuration(summary.avgDurationMs) }),
+                jsx(HistoryTile, { key: "cache", label: "缓存命中", value: formatPercent(summary.cacheRate) })
+              ]
+            }));
+            if (Array.isArray(summary.models) && summary.models.length > 0) {
+              children.push(jsx("div", {
+                key: "mh",
+                className: "avbhist-section",
+                children: "模型分布：" + summary.models.map(function (item) {
+                  return (item.provider || "—") + "/" + (item.model || "—") + " " + item.total + " 次"
+                    + (item.failed > 0 ? "（失败 " + item.failed + "）" : "");
+                }).join("，")
+              }));
+            }
+          }
+          children.push(jsx("div", {
+            key: "cnt",
+            className: "avbhist-section",
+            children: "最近 " + Math.min(records.length, HISTORY_ROWS) + " 条"
+          }));
+          children.push(jsx(HistoryTable, { key: "tb", rows: records.slice(0, HISTORY_ROWS) }));
+        }
+        return jsx("div", { className: "avbhist-page", children: children });
+      }
+
+      function registerHistory(ctx) {
+        var source = createHistorySource();
+        // 钩子包一层：inject 面里的函数会被渲染器当普通 prop 传给组件。
+        var useHistory = function () {
+          var state = useState(function () { return source.getSnapshot(); });
+          var setState = state[1];
+          useEffect(function () {
+            var listener = function () { setState(source.getSnapshot()); };
+            var dispose = source.subscribe(listener);
+            source.load();
+            return dispose;
+          }, []);
+          return state[0];
+        };
+        ctx.effect(function () {
+          return ctx.slots.inject("main", function () {
+            return ctx.slots.register({
+              name: "main",
+              key: HISTORY_PANEL_ID,
+              label: "识图历史",
+              // 参考实现（model-pool / session-changes）都声明 inject，
+              // 缺了它主页面注册不生效、渲染出空白。
+              inject: function () { return { useHistory: useHistory }; }
+            }, HistoryPage);
+          });
+        }, "auto-vision-bridge: 识图历史主页面");
+        ctx.effect(function () {
+          return ctx.slots.inject("sidebar.panellist", function () {
+            return ctx.slots.register({
+              name: "sidebar.panellist",
+              id: HISTORY_PANEL_ID,
+              order: 31,
+              label: "识图历史"
+            }, HistoryIcon);
+          });
+        }, "auto-vision-bridge: 识图历史侧栏入口");
+      }
+
       function apply(ctx) {
         registerSettings(ctx);
+        registerHistory(ctx);
         ctx.effect(function () {
           function scan() {
             if (!document.body) return;

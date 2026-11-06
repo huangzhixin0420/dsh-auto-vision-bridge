@@ -78,3 +78,37 @@ test("重试次数非法时按 0 处理", () => {
   assert.equal(retryLimitOf({ retries: "x" }), 0);
   assert.equal(retryLimitOf({}), 0);
 });
+
+test("识图失败时把最后一次派发的路由挂到 error 上", async () => {
+  // 记账要能回答「是哪条路由挂了」；失败时 recognizeWithReport 会抛错，
+  // 路由信息只能跟着 error 一起出去。
+  const h = harness({ "c2a/vision": new Error("上游 500") });
+  const image = imageOf("像素", "sha256:fail-route");
+  const attachmentRef = await admitImage(h.ctx, image);
+  await assert.rejects(
+    () => h.client.recognizeWithReport({ ...image, attachmentRef }),
+    (error) => {
+      assert.ok(error.dshVisionRoute, "error 上应带 dshVisionRoute");
+      assert.equal(error.dshVisionRoute.provider, "c2a");
+      assert.equal(error.dshVisionRoute.model, "vision");
+      assert.equal(typeof error.dshVisionRoute.attempt, "number");
+      return true;
+    },
+  );
+});
+
+test("重试后仍失败时路由记的是最后一次尝试的模型", async () => {
+  const h = harness({ "c2a/vision": new Error("上游 500") });
+  const image = imageOf("像素", "sha256:fail-retry");
+  const attachmentRef = await admitImage(h.ctx, image);
+  await assert.rejects(
+    () => h.client.recognizeWithReport({ ...image, attachmentRef }),
+    (error) => {
+      assert.equal(error.dshVisionRoute.provider, "c2a");
+      assert.equal(error.dshVisionRoute.model, "vision");
+      // 配置里 retries=1，所以 attempt 至少到 2。
+      assert.ok(error.dshVisionRoute.attempt >= 1, `attempt=${error.dshVisionRoute.attempt}`);
+      return true;
+    },
+  );
+});

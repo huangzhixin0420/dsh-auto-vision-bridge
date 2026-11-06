@@ -351,11 +351,13 @@ test("顶层设置复用 auto-vision-bridge 配置，只保留模型池与并发
   exports.apply(ctx);
   assert.deepEqual([...exports.inject], ["slots", "remote", "remote.session", "configForms"]);
   // 设置页 + 识图历史页（侧栏条目与独立主页面）。
-  // 识图历史页（main + sidebar.panellist）暂时回滚：它曾让客户端插件加载失败，
-  // 服务端能力（lib/history.js + 取数路由）已就绪，页面待重新接入。
-  assert.deepEqual(registrations.map((item) => item.name), ["settings.section"]);
+  assert.deepEqual(registrations.map((item) => item.name), ["settings.section", "main", "sidebar.panellist"]);
   assert.equal(registrations[0].id, "auto-vision-bridge");
   assert.equal(registrations[0].label, "自动视觉桥接");
+  assert.equal(registrations[1].key, "auto-vision-bridge-history");
+  assert.equal(registrations[1].label, "识图历史");
+  assert.equal(registrations[2].id, "auto-vision-bridge-history");
+  assert.equal(registrations[2].label, "识图历史");
 
   assert.equal(models.length, 1);
   const model = models[0];
@@ -391,8 +393,8 @@ test("顶层设置复用 auto-vision-bridge 配置，只保留模型池与并发
   assert.equal(nodes.find((node) => node.type === "h3")?.props.children, "自动视觉桥接");
   // 不再有独立的密钥控件与端点/视觉模型输入框。
   assert.equal(nodes.some((node) => node.type?.name === "SettingsSecretField"), false);
-  // 9 个标量输入框（识图历史页回滚后，保留天数字段暂未在设置页露出）；提示词是独立的 textarea。
-  assert.equal(nodes.filter((node) => node.type?.name === "SettingsValueField").length, 9);
+  // 10 个标量输入框（含识图历史保留天数）；提示词是独立的 textarea。
+  assert.equal(nodes.filter((node) => node.type?.name === "SettingsValueField").length, 10);
   assert.equal(nodes.some((node) => node.props?.["data-auto-vision-prompt"] === true), true);
 
   ctx.disposers[0]();
