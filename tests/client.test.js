@@ -519,3 +519,29 @@ test("优先级非法值在落盘时回落为 1，且 dirty 判定包含优先�
   await face.save();
   assert.equal(mutates.at(-1)[0].value[0].priority, 1);
 });
+
+test("识图历史展示层：短 id、图片名与数值格式化", async () => {
+  const { exports } = await loadClient();
+  const t = exports.__test;
+
+  assert.equal(t.shortenSessionId("session-10b9ce26-3049-4863-8767-aaa5ad6a96ea"), "10b9ce26");
+  assert.equal(t.shortenSessionId(""), "—");
+  assert.equal(t.shortenSessionId(undefined), "—");
+  assert.equal(t.shortenSessionId("a392b4b0"), "a392b4b0");
+
+  assert.equal(t.imageLabelOf({ imageName: "photo.png", attachmentId: "sha256:abc" }), "photo.png");
+  assert.equal(t.imageLabelOf({ imageName: "", attachmentId: "sha256:3f1628eb609f321d" }), "附件 3f1628eb");
+  assert.equal(t.imageLabelOf({}), "(未命名)");
+
+  assert.equal(t.formatDuration(0), "0 ms");
+  assert.equal(t.formatDuration(850), "850 ms");
+  assert.equal(t.formatDuration(1500), "1.50 s");
+  assert.equal(t.formatDuration(-1), "—");
+  assert.equal(t.formatPercent(0), "0.0%");
+  assert.equal(t.formatPercent(0.727), "72.7%");
+  assert.equal(t.formatPercent("x"), "—");
+
+  assert.equal(t.HISTORY_ROWS, 20);
+  assert.equal(t.HISTORY_ROUTE, "api/auto-vision-bridge.history");
+  assert.equal(t.HISTORY_PANEL_ID, "auto-vision-bridge-history");
+});

@@ -117,7 +117,7 @@
         ".avb-num{width:64px;text-align:right}",
         ".avb-btn{border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-background-secondary);color:var(--dsw-alias-label-primary);cursor:pointer;font-family:inherit;font-size:12px;line-height:18px;padding:3px 10px}",
         ".avb-btn:disabled{opacity:.5;cursor:not-allowed}",
-        ".avb-btnDanger{color:var(--dsw-alias-state-danger-label)}",
+        ".avb-btnDanger{color:var(--dsw-alias-state-error-primary)}",
         ".avb-catalog{display:grid;gap:4px}",
         ".avb-catalogGroup{border:.5px solid var(--dsw-alias-border-l3);border-radius:6px;padding:6px 8px;display:grid;gap:4px}",
         ".avb-catalogGroupName{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}",
@@ -138,7 +138,7 @@
         ".avbhist-table th{text-align:left;font-weight:500;color:var(--dsw-alias-label-secondary);padding:4px 6px;border-bottom:.5px solid var(--dsw-alias-border-l2);white-space:nowrap}",
         ".avbhist-table td{padding:4px 6px;border-bottom:.5px solid var(--dsw-alias-border-l3);color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
         ".avbhist-ok{color:var(--dsw-alias-state-success-primary)}",
-        ".avbhist-fail{color:var(--dsw-alias-state-danger-label)}",
+        ".avbhist-fail{color:var(--dsw-alias-state-error-primary)}",
         ".avbhist-empty{padding:12px 0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}",
         "@media (max-width:640px){.avbhist-page{padding:12px 12px max(28px,calc(env(safe-area-inset-bottom,0px) + 16px));gap:10px}}"
       ].join("");
@@ -998,6 +998,15 @@
         return text.replace(/^session-/, "").slice(0, 8);
       }
 
+      /** 图片列的显示名：优先文件名，只有 attachmentId 时缩成简短标识。 */
+      function imageLabelOf(row) {
+        if (row.imageName) return row.imageName;
+        var id = String(row.attachmentId || "").trim();
+        if (!id) return "(未命名)";
+        var hex = id.replace(/^sha256:/, "");
+        return "附件 " + hex.slice(0, 8);
+      }
+
       /** 明细表。 */
       function HistoryTable(props) {
         var rows = props.rows || [];
@@ -1017,7 +1026,7 @@
         });
         var body = rows.map(function (row, index) {
           var ok = row.ok === true;
-          var label = row.imageName || row.attachmentId || "(未命名)";
+          var label = imageLabelOf(row);
           var detail = ok ? "成功" : (row.error || "失败");
           // 有标题（会话仍 live 且已生成）就用标题，否则退回短 id。
           var sessionText = row.sessionTitle || shortenSessionId(row.sessionId);
@@ -1193,7 +1202,16 @@
         AutoVisionController,
         AutoVisionSettings,
         PoolEditor,
-        normalizeEntry
+        normalizeEntry,
+        // 识图历史页的展示层小工具
+        HISTORY_PANEL_ID,
+        HISTORY_ROUTE,
+        HISTORY_ROWS,
+        formatDuration,
+        formatPercent,
+        formatTime,
+        shortenSessionId,
+        imageLabelOf
       };
       return module.exports;
     }
