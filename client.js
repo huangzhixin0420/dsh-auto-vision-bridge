@@ -126,22 +126,32 @@
         ".avb-catalogTag{color:var(--dsw-alias-state-warn-label);font-size:11px;line-height:16px;white-space:nowrap}",
         // ---- 识图历史页 ----
         // 页面自己滚：DSH 主面板槽整条链是 overflow:hidden，document 也不滚。
-        ".avbhist-page{display:flex;flex-direction:column;gap:12px;padding:16px 20px;min-width:0;flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior-y:contain}",
+        ".avbhist-page{display:flex;flex-direction:column;gap:16px;padding:20px 24px;min-width:0;flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior-y:contain}",
+        ".avbhist-head{display:flex;flex-direction:column;gap:4px}",
         ".avbhist-title{margin:0;font-size:14px;line-height:20px}",
-        ".avbhist-desc{margin:4px 0 0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}",
-        ".avbhist-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:8px}",
-        ".avbhist-tile{border:.5px solid var(--dsw-alias-border-l3);border-radius:6px;padding:6px 8px;display:grid;gap:2px;min-width:0}",
+        ".avbhist-desc{margin:0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}",
+        // 统计块不铺满：等宽铺满整行是模板特征，这里按内容宽度靠左排。
+        ".avbhist-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(88px,112px));justify-content:start;gap:8px}",
+        ".avbhist-tile{border:.5px solid var(--dsw-alias-border-l3);border-radius:8px;padding:8px 12px;display:grid;gap:4px;min-width:0}",
         ".avbhist-tileLabel{color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}",
         ".avbhist-tileValue{color:var(--dsw-alias-label-primary);font-size:15px;line-height:20px;font-variant-numeric:tabular-nums}",
-        ".avbhist-section{margin:0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}",
+        // 模型分布：带比例条的列表。唯一的强调色只在这里用。
+        ".avbhist-models{display:grid;gap:6px;max-width:420px}",
+        ".avbhist-model{display:grid;grid-template-columns:132px 1fr 44px;gap:8px;align-items:center;font-size:12px;line-height:18px}",
+        ".avbhist-modelName{color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+        ".avbhist-modelBar{height:6px;border-radius:3px;background:var(--dsw-alias-border-l3);overflow:hidden}",
+        ".avbhist-modelBarFill{display:block;height:100%;border-radius:3px;background:var(--dsw-alias-state-business-primary)}",
+        ".avbhist-modelCount{text-align:right;color:var(--dsw-alias-label-primary);font-variant-numeric:tabular-nums}",
         ".avbhist-table{width:100%;border-collapse:collapse;font-size:12px;line-height:18px;table-layout:fixed}",
-        ".avbhist-table th{text-align:left;font-weight:500;color:var(--dsw-alias-label-secondary);padding:4px 6px;border-bottom:.5px solid var(--dsw-alias-border-l2);white-space:nowrap}",
-        ".avbhist-table td{padding:4px 6px;border-bottom:.5px solid var(--dsw-alias-border-l3);color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+        ".avbhist-table th{text-align:left;font-weight:500;color:var(--dsw-alias-label-secondary);padding:4px 8px;border-bottom:.5px solid var(--dsw-alias-border-l2);white-space:nowrap}",
+        ".avbhist-table td{padding:4px 8px;border-bottom:.5px solid var(--dsw-alias-border-l3);color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
         // 必须带 .avbhist-table td 前缀：否则被 .avbhist-table td 的 color 覆盖（优先级 0,1,1 > 0,1,0）。
         ".avbhist-table td.avbhist-ok{color:var(--dsw-alias-state-success-primary)}",
         ".avbhist-table td.avbhist-fail{color:var(--dsw-alias-state-error-primary)}",
+        // 签名细节：失败行左侧一道细边，扫表时比只靠文字颜色快。
+        ".avbhist-table tr.avbhist-rowFail td:first-child{box-shadow:inset 2px 0 0 var(--dsw-alias-state-error-primary)}",
         ".avbhist-empty{padding:12px 0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}",
-        "@media (max-width:640px){.avbhist-page{padding:12px 12px max(28px,calc(env(safe-area-inset-bottom,0px) + 16px));gap:10px}}"
+        "@media (max-width:640px){.avbhist-page{padding:12px 12px max(28px,calc(env(safe-area-inset-bottom,0px) + 16px));gap:12px}.avbhist-tiles{grid-template-columns:repeat(auto-fit,minmax(80px,1fr))}.avbhist-model{grid-template-columns:104px 1fr 40px}.avbhist-table{table-layout:auto}.avbhist-cSession,.avbhist-cImage{display:none}}"
       ].join("");
       if (typeof document !== "undefined" && typeof document.querySelector === "function"
         && document.querySelector("style[data-auto-vision-bridge-css]") === null) {
@@ -924,7 +934,7 @@
         if (!isFinite(value) || value <= 0) return "—";
         var date = new Date(value);
         var pad = function (n) { return n < 10 ? "0" + n : String(n); };
-        return (date.getMonth() + 1) + "/" + date.getDate() + " "
+        return pad(date.getMonth() + 1) + "/" + pad(date.getDate()) + " "
           + pad(date.getHours()) + ":" + pad(date.getMinutes()) + ":" + pad(date.getSeconds());
       }
 
@@ -1012,16 +1022,16 @@
       function HistoryTable(props) {
         var rows = props.rows || [];
         if (rows.length === 0) {
-          return jsx("div", { className: "avbhist-empty", children: "暂无识图记录。" });
+          return jsx("div", { className: "avbhist-empty", children: "暂无识图记录" });
         }
         var head = jsxs("tr", {
           key: "h",
           children: [
             jsx("th", { key: "t", style: { width: "96px" }, children: "时间" }),
-            jsx("th", { key: "c", style: { width: "150px" }, children: "会话" }),
-            jsx("th", { key: "m", style: { width: "140px" }, children: "模型" }),
-            jsx("th", { key: "i", style: { width: "130px" }, children: "图片" }),
-            jsx("th", { key: "s", style: { width: "70px" }, children: "耗时" }),
+            jsx("th", { key: "c", className: "avbhist-cSession", style: { width: "140px" }, children: "会话" }),
+            jsx("th", { key: "m", className: "avbhist-cModel", style: { width: "132px" }, children: "模型" }),
+            jsx("th", { key: "i", className: "avbhist-cImage", style: { width: "130px" }, children: "图片" }),
+            jsx("th", { key: "s", className: "avbhist-cCost", style: { width: "68px" }, children: "耗时" }),
             jsx("th", { key: "r", children: "结果" })
           ]
         });
@@ -1033,16 +1043,17 @@
           var sessionText = row.sessionTitle || shortenSessionId(row.sessionId);
           return jsxs("tr", {
             key: "r-" + index,
+            className: ok ? undefined : "avbhist-rowFail",
             children: [
               jsx("td", { key: "t", title: formatTime(row.time), children: formatTime(row.time) }),
-              jsx("td", { key: "c", title: sessionText, children: sessionText }),
+              jsx("td", { key: "c", className: "avbhist-cSession", title: sessionText, children: sessionText }),
               jsx("td", {
                 key: "m",
                 title: (row.provider || "") + "/" + (row.model || ""),
                 children: (row.provider || "—") + "/" + (row.model || "—")
               }),
-              jsx("td", { key: "i", title: label, children: label }),
-              jsx("td", { key: "s", children: formatDuration(row.durationMs) }),
+              jsx("td", { key: "i", className: "avbhist-cImage", title: label, children: label }),
+              jsx("td", { key: "s", className: "avbhist-cCost", children: formatDuration(row.durationMs) }),
               jsx("td", {
                 key: "r",
                 className: ok ? "avbhist-ok" : "avbhist-fail",
@@ -1061,6 +1072,41 @@
         });
       }
 
+      /** 模型分布：带比例条的列表。这是页面上唯一放强调色的地方。 */
+      function ModelBars(props) {
+        var models = (props.models || []).slice().sort(function (a, b) {
+          return (b.total || 0) - (a.total || 0);
+        });
+        if (models.length === 0) return null;
+        var max = models[0].total || 1;
+        return jsx("div", {
+          className: "avbhist-models",
+          children: models.map(function (item, index) {
+            var total = item.total || 0;
+            var pct = Math.max(4, Math.round((total / max) * 100));
+            var name = (item.provider || "—") + "/" + (item.model || "—");
+            return jsxs("div", {
+              key: "m-" + index,
+              className: "avbhist-model",
+              children: [
+                jsx("span", { key: "n", className: "avbhist-modelName", title: name, children: name }),
+                jsx("span", {
+                  key: "b",
+                  className: "avbhist-modelBar",
+                  children: jsx("span", { className: "avbhist-modelBarFill", style: { width: pct + "%" } })
+                }),
+                jsx("span", {
+                  key: "c",
+                  className: "avbhist-modelCount",
+                  title: item.failed > 0 ? total + " 次，失败 " + item.failed + " 次" : total + " 次",
+                  children: String(total)
+                })
+              ]
+            });
+          })
+        });
+      }
+
       /** 识图历史主页面。 */
       function HistoryPage(props) {
         var state = props.useHistory();
@@ -1068,12 +1114,17 @@
         var summary = snapshot && snapshot.summary ? snapshot.summary : null;
         var records = snapshot && Array.isArray(snapshot.records) ? snapshot.records : [];
         var children = [
-          jsx("h2", { key: "t", className: "avbhist-title", children: "识图历史" }),
-          jsx("p", {
-            key: "d",
-            className: "avbhist-desc",
-            children: "每张图片一条记录：实际派发的模型、耗时与结果。保留 "
-              + (snapshot && snapshot.retentionDays ? snapshot.retentionDays + " 天" : "若干天") + "。"
+          jsxs("div", {
+            key: "head",
+            className: "avbhist-head",
+            children: [
+              jsx("h2", { className: "avbhist-title", children: "识图历史" }),
+              jsx("p", {
+                className: "avbhist-desc",
+                children: "每张图一条记录，保留 "
+                  + (snapshot && snapshot.retentionDays ? snapshot.retentionDays + " 天" : "若干天")
+              })
+            ]
           })
         ];
         if (state.error) {
@@ -1093,22 +1144,9 @@
                 jsx(HistoryTile, { key: "cache", label: "缓存命中", value: formatPercent(summary.cacheRate) })
               ]
             }));
-            if (Array.isArray(summary.models) && summary.models.length > 0) {
-              children.push(jsx("div", {
-                key: "mh",
-                className: "avbhist-section",
-                children: "模型分布：" + summary.models.map(function (item) {
-                  return (item.provider || "—") + "/" + (item.model || "—") + " " + item.total + " 次"
-                    + (item.failed > 0 ? "（失败 " + item.failed + "）" : "");
-                }).join("，")
-              }));
-            }
+            // 模型分布用条列表而不是一行字：这是页面唯一的信息可视化，也省掉一行冗余标签。
+            children.push(jsx(ModelBars, { key: "models", models: summary.models }));
           }
-          children.push(jsx("div", {
-            key: "cnt",
-            className: "avbhist-section",
-            children: "最近 " + Math.min(records.length, HISTORY_ROWS) + " 条"
-          }));
           children.push(jsx(HistoryTable, { key: "tb", rows: records.slice(0, HISTORY_ROWS) }));
         }
         return jsx("div", { className: "avbhist-page", children: children });
