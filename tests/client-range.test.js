@@ -11,6 +11,13 @@ function clientRequire(id) {
     const element = (type, props, key) => ({ type, props, key });
     return { jsx: element, jsxs: element };
   }
+  if (id === "react") {
+    // 识图历史页用到 useState/useEffect；测试里只提供最小替身。
+    return {
+      useState: (init) => [typeof init === "function" ? init() : init, () => {}],
+      useEffect: () => {},
+    };
+  }
   if (id === "@deepseek-ai/dsh-client-ui-primitives") {
     return {
       SettingsFormModel: class {},

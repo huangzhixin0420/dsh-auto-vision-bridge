@@ -1,5 +1,6 @@
 import z from "@deepseek-ai/schemastery";
 import { defineTool } from "@deepseek-ai/dsh-tools";
+import { DEFAULT_RETENTION_DAYS } from "./lib/history.js";
 import { INSPECT_IMAGE_DESCRIPTION } from "./lib/inspect-image.js";
 import { applyRuntime, runtimeDiagnostics } from "./lib/runtime.js";
 import { DEFAULT_PROMPT } from "./lib/vision-client.js";
@@ -41,6 +42,8 @@ export const Config = z.object({
   dumpThreshold: z.number().default(500),
   /** 落盘后留在上下文里的摘要长度（字符）。 */
   summaryLength: z.number().default(400),
+  /** 识图历史保留天数；0 表示不自动清理。 */
+  historyRetentionDays: z.number().default(DEFAULT_RETENTION_DAYS),
   /** 视觉模型池；条目来自 DSH 模型目录，可自由增减。 */
   pool: z.array(PoolEntry).default([]),
 }).volatile();

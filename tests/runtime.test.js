@@ -44,6 +44,16 @@ function cordisFixture(config) {
         (isChild ? effects : rootEffects).push(dispose);
         return dispose;
       },
+      // 嵌套服务注入：deps 里的服务都存在才回调，否则安静跳过
+      // （与 cordis 的 ctx.inject 同语义：缺服务时该功能整体不装配）。
+      inject(deps, callback) {
+        const missing = deps.filter((name) => services[name] === undefined);
+        if (missing.length > 0) return () => {};
+        const child = makeContext(true);
+        children.push(child);
+        callback(child);
+        return () => {};
+      },
       plugin(definition) {
         const child = makeContext(true);
         children.push(child);
