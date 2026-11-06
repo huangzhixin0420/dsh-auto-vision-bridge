@@ -137,8 +137,9 @@
         ".avbhist-table{width:100%;border-collapse:collapse;font-size:12px;line-height:18px;table-layout:fixed}",
         ".avbhist-table th{text-align:left;font-weight:500;color:var(--dsw-alias-label-secondary);padding:4px 6px;border-bottom:.5px solid var(--dsw-alias-border-l2);white-space:nowrap}",
         ".avbhist-table td{padding:4px 6px;border-bottom:.5px solid var(--dsw-alias-border-l3);color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
-        ".avbhist-ok{color:var(--dsw-alias-state-success-primary)}",
-        ".avbhist-fail{color:var(--dsw-alias-state-error-primary)}",
+        // 必须带 .avbhist-table td 前缀：否则被 .avbhist-table td 的 color 覆盖（优先级 0,1,1 > 0,1,0）。
+        ".avbhist-table td.avbhist-ok{color:var(--dsw-alias-state-success-primary)}",
+        ".avbhist-table td.avbhist-fail{color:var(--dsw-alias-state-error-primary)}",
         ".avbhist-empty{padding:12px 0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}",
         "@media (max-width:640px){.avbhist-page{padding:12px 12px max(28px,calc(env(safe-area-inset-bottom,0px) + 16px));gap:10px}}"
       ].join("");
