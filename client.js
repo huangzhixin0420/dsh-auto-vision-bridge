@@ -1062,7 +1062,8 @@
                 className: "avbhist-cCost",
                 children: [
                   formatDuration(row.durationMs),
-                  Number(row.waitMs) > 0
+                  // 100ms 以下不算排队：那是调度器 acquire 的天然抖动，显示出来只是噪音。
+                  Number(row.waitMs) >= 100
                     ? jsx("span", { key: "w", className: "avbhist-wait", children: "排队 " + formatDuration(row.waitMs) })
                     : null,
                 ],
