@@ -47,7 +47,7 @@ test("inspect_image 支持本地绝对路径与 cwd 相对路径，并返回视�
   assert.equal(tool.parameters.path.required, undefined);
   assert.equal(tool.parameters.attachmentId.required, undefined);
   assert.match(INSPECT_IMAGE_DESCRIPTION, /attachmentId/);
-  assert.match(INSPECT_IMAGE_DESCRIPTION, /screenshots/);
+  assert.match(INSPECT_IMAGE_DESCRIPTION, /screenshot/);
   // 描述必须明确指示模型：多图时一次调用传数组，而不是每张图调一次。
   assert.match(INSPECT_IMAGE_DESCRIPTION, /array/i);
   assert.match(INSPECT_IMAGE_DESCRIPTION, /one call/i);
@@ -220,7 +220,7 @@ test("inspect_image 的 path 与 attachmentId 同时提供或都缺失时，在�
   ]) {
     await assert.rejects(
       tool.execute(args, { agent: { session } }),
-      /path 与 attachmentId 至少要提供一个非空参数/,
+      /path\/paths 与 attachmentId\/attachmentIds 至少要提供一个非空参数/,
     );
   }
   assert.equal(reads, 0);
@@ -262,4 +262,46 @@ test("attachmentId 未在当前会话用户图片中登记时拒绝读取", asyn
   assert.equal(result[0].ok, false);
   assert.match(result[0].error, /当前会话未找到图片附件：sha256:other/);
   assert.equal(reads, 0);
+});
+
+// ---- 复数参数：早先用 oneOf 表达「字符串或数组」，实测传数组进来会被整体当成
+// 一个字符串（报错里能看到 "[…]" 被当作文件名），所以拆成 path/paths 两组明确参数。
+
+test("inspect_image 的 attachmentIds 一次识别多张，结果按输入顺序返回", async () => {
+  const { ref, session } = attachmentFixture();
+  const attachments = fakeAttachments({
+    readImage(actualRef) { return { ref: actualRef, data: bytes }; },
+  });
+  const llm = fakeLlm({ "c2a/vision": "转写内容" });
+  const ctx = { attachments, llm, get(name) { return this[name]; } };
+  const config = testConfig({ pool: [{ provider: "c2a", model: "vision" }] });
+  const client = new VisionClient(() => config, { ctx, llm });
+  const tool = createInspectImageTool(identityDefineTool, { ctx, client, getConfig: () => config });
+
+  const result = await tool.execute(
+    { attachmentIds: [ref.attachmentId, ref.attachmentId] },
+    { agent: { session } },
+  );
+  assert.equal(result.length, 2, "两条输入应产出两条结果");
+  assert.deepEqual(result.map((item) => item.index), [0, 1]);
+  assert.ok(result.every((item) => item.ok));
+});
+
+test("inspect_image 的单数与复数参数同时提供时按顺序合并", async () => {
+  const { ref, session } = attachmentFixture();
+  const attachments = fakeAttachments({
+    readImage(actualRef) { return { ref: actualRef, data: bytes }; },
+  });
+  const llm = fakeLlm({ "c2a/vision": "转写内容" });
+  const ctx = { attachments, llm, get(name) { return this[name]; } };
+  const config = testConfig({ pool: [{ provider: "c2a", model: "vision" }] });
+  const client = new VisionClient(() => config, { ctx, llm });
+  const tool = createInspectImageTool(identityDefineTool, { ctx, client, getConfig: () => config });
+
+  const result = await tool.execute(
+    { attachmentId: ref.attachmentId, attachmentIds: [ref.attachmentId] },
+    { agent: { session } },
+  );
+  assert.equal(result.length, 2);
+  assert.deepEqual(result.map((item) => item.index), [0, 1]);
 });
