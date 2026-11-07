@@ -220,7 +220,7 @@ test("inspect_image 的 path 与 attachmentId 同时提供或都缺失时，在�
   ]) {
     await assert.rejects(
       tool.execute(args, { agent: { session } }),
-      /path\/paths 与 attachmentId\/attachmentIds 至少要提供一个非空参数/,
+      /至少要提供一个非空参数/,
     );
   }
   assert.equal(reads, 0);
@@ -304,4 +304,77 @@ test("inspect_image 的单数与复数参数同时提供时按顺序合并", asy
   );
   assert.equal(result.length, 2);
   assert.deepEqual(result.map((item) => item.index), [0, 1]);
+});
+
+// ---- items：多图各带各的问题 ----
+// 早先只有单个 question，多图只能问同一件事；而平行数组（paths[0] 配 questions[0]）
+// 容易错位，所以把「图 + 问题」绑成对象。
+
+test("inspect_image 的 items 让每张图带自己的问题，结果按输入顺序返回", async () => {
+  const { ref, session } = attachmentFixture();
+  const attachments = fakeAttachments({
+    readImage(actualRef) { return { ref: actualRef, data: bytes }; },
+  });
+  const prompts = [];
+  const llm = fakeLlm({
+    "c2a/vision": (streamOptions) => {
+      prompts.push(JSON.stringify(streamOptions.messages ?? streamOptions));
+      return "回答";
+    },
+  });
+  const ctx = { attachments, llm, get(name) { return this[name]; } };
+  const config = testConfig({ pool: [{ provider: "c2a", model: "vision" }] });
+  const client = new VisionClient(() => config, { ctx, llm });
+  const tool = createInspectImageTool(identityDefineTool, { ctx, client, getConfig: () => config });
+
+  const result = await tool.execute(
+    {
+      items: [
+        { attachmentId: ref.attachmentId, question: "QUESTION_ALPHA" },
+        { attachmentId: ref.attachmentId, question: "QUESTION_BETA" },
+      ],
+    },
+    { agent: { session } },
+  );
+  assert.equal(result.length, 2, "两条 items 应产出两条结果");
+  assert.deepEqual(result.map((item) => item.index), [0, 1]);
+  assert.ok(result.every((item) => item.ok));
+  const joined = prompts.join("\n");
+  assert.match(joined, /QUESTION_ALPHA/, "第一条要用它自己的问题");
+  assert.match(joined, /QUESTION_BETA/, "第二条要用它自己的问题");
+});
+
+test("inspect_image 的 items 里没写 question 时回落到顶层 question，无效条目被跳过", async () => {
+  const { ref, session } = attachmentFixture();
+  const attachments = fakeAttachments({
+    readImage(actualRef) { return { ref: actualRef, data: bytes }; },
+  });
+  const prompts = [];
+  const llm = fakeLlm({
+    "c2a/vision": (streamOptions) => {
+      prompts.push(JSON.stringify(streamOptions.messages ?? streamOptions));
+      return "回答";
+    },
+  });
+  const ctx = { attachments, llm, get(name) { return this[name]; } };
+  const config = testConfig({ pool: [{ provider: "c2a", model: "vision" }] });
+  const client = new VisionClient(() => config, { ctx, llm });
+  const tool = createInspectImageTool(identityDefineTool, { ctx, client, getConfig: () => config });
+
+  const result = await tool.execute(
+    {
+      question: "TOP_LEVEL_FALLBACK",
+      items: [
+        { attachmentId: ref.attachmentId },
+        { question: "只有问题没有图" },
+        { attachmentId: ref.attachmentId, question: "OWN_QUESTION" },
+      ],
+    },
+    { agent: { session } },
+  );
+  assert.equal(result.length, 2, "缺图的条目应被跳过");
+  assert.deepEqual(result.map((item) => item.index), [0, 1]);
+  const joined = prompts.join("\n");
+  assert.match(joined, /TOP_LEVEL_FALLBACK/, "没写 question 的那条回落到顶层");
+  assert.match(joined, /OWN_QUESTION/, "写了自己的问题的那条用自己的");
 });
