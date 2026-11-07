@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { VisionHistory, historyKey, historyDomainSpec, HISTORY_TABLE } from "../lib/history.js";
+import { VisionHistory, historyKey } from "../lib/history.js";
 import { retentionDaysOf } from "../lib/runtime.js";
 
 /** 可控的假表：记录 put/delete/deleteMany 调用。 */
@@ -43,7 +43,7 @@ function record(overrides = {}) {
 
 test("记录落盘带全部字段，时间戳由账本补齐", async () => {
   const table = fakeTable();
-  const history = new VisionHistory({ table, now: () => 1000, random: () => "aaa" });
+  const history = new VisionHistory({ store: table, now: () => 1000, random: () => "aaa" });
   await history.record(record());
   assert.equal(table.calls.put.length, 1);
   const [key, value] = table.calls.put[0];
@@ -63,7 +63,7 @@ test("记录落盘带全部字段，时间戳由账本补齐", async () => {
 
 test("失败记录也落盘，带失败原因", async () => {
   const table = fakeTable();
-  const history = new VisionHistory({ table, now: () => 1, random: () => "b" });
+  const history = new VisionHistory({ store: table, now: () => 1, random: () => "b" });
   await history.record(record({ ok: false, error: "视觉请求超时（60000ms）", provider: "", model: "" }));
   const [, value] = table.calls.put[0];
   assert.equal(value.ok, false);
@@ -74,7 +74,7 @@ test("失败记录也落盘，带失败原因", async () => {
 test("写失败只记日志，不抛给调用方", async () => {
   const table = fakeTable();
   table.put = async () => { throw new Error("磁盘满了"); };
-  const history = new VisionHistory({ table, now: () => 1, random: () => "c" });
+  const history = new VisionHistory({ store: table, now: () => 1, random: () => "c" });
   const warnings = [];
   await history.record(record(), { warn: (m) => warnings.push(m) });
   assert.equal(warnings.length, 1);
@@ -87,7 +87,7 @@ test("列表按时间倒序，可限量", async () => {
     ["k2", { time: 300, ok: true }],
     ["k3", { time: 200, ok: true }],
   ]);
-  const history = new VisionHistory({ table });
+  const history = new VisionHistory({ store: table });
   const all = await history.list();
   assert.deepEqual(all.map((r) => r.time), [300, 200, 100]);
   const limited = await history.list(2);
@@ -102,7 +102,7 @@ test("清理按时间删除过期记录", async () => {
     ["old2", { time: now - 2 * day, ok: true }],
     ["fresh", { time: now - 1000, ok: true }],
   ]);
-  const history = new VisionHistory({ table, now: () => now });
+  const history = new VisionHistory({ store: table, now: () => now });
   const removed = await history.prune(1);
   assert.equal(removed, 2);
   assert.deepEqual(table.calls.deleteMany[0].sort(), ["old1", "old2"]);
@@ -111,7 +111,7 @@ test("清理按时间删除过期记录", async () => {
 
 test("保留天数为 0 时不清理", async () => {
   const table = fakeTable([["k", { time: 1, ok: true }]]);
-  const history = new VisionHistory({ table, now: () => 10_000_000 });
+  const history = new VisionHistory({ store: table, now: () => 10_000_000 });
   assert.equal(await history.prune(0), 0);
   assert.equal(table.calls.deleteMany.length, 0);
 });
@@ -151,13 +151,6 @@ test("保留天数读取：非法值退回默认，0 表示不清理", () => {
   assert.equal(retentionDaysOf({ historyRetentionDays: -1 }), 7);
   assert.equal(retentionDaysOf({ historyRetentionDays: "abc" }), 7);
   assert.equal(retentionDaysOf({}), 7);
-});
-
-test("域声明：域名合法、布局为 per-record、含 events 表", () => {
-  assert.equal(historyDomainSpec.name, "auto_vision_bridge");
-  assert.match(historyDomainSpec.name, /^[a-z][a-z0-9_]*$/);
-  assert.equal(historyDomainSpec.layout, "per-record");
-  assert.ok(Object.hasOwn(historyDomainSpec.tables, HISTORY_TABLE));
 });
 
 test("记录键含时间戳与随机后缀，避免同毫秒并发撞键", () => {
