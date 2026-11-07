@@ -148,6 +148,8 @@
         // 必须带 .avbhist-table td 前缀：否则被 .avbhist-table td 的 color 覆盖（优先级 0,1,1 > 0,1,0）。
         ".avbhist-table td.avbhist-ok{color:var(--dsw-alias-state-success-primary)}",
         ".avbhist-table td.avbhist-fail{color:var(--dsw-alias-state-error-primary)}",
+        // 耗时下方那行排队小字：弱化到 tertiary，避免和主值抢注意力。
+        ".avbhist-table td.avbhist-cCost .avbhist-wait{display:block;font-size:10px;line-height:1.3;color:var(--dsw-alias-label-tertiary,#8a8a8a)}",
         // 签名细节：失败行左侧一道细边，扫表时比只靠文字颜色快。
         ".avbhist-table tr.avbhist-rowFail td:first-child{box-shadow:inset 2px 0 0 var(--dsw-alias-state-error-primary)}",
         ".avbhist-empty{padding:12px 0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}",
@@ -1031,7 +1033,7 @@
             jsx("th", { key: "c", className: "avbhist-cSession", style: { width: "140px" }, children: "会话" }),
             jsx("th", { key: "m", className: "avbhist-cModel", style: { width: "132px" }, children: "模型" }),
             jsx("th", { key: "i", className: "avbhist-cImage", style: { width: "130px" }, children: "图片" }),
-            jsx("th", { key: "s", className: "avbhist-cCost", style: { width: "68px" }, children: "耗时" }),
+            jsx("th", { key: "s", className: "avbhist-cCost", style: { width: "88px" }, children: "耗时" }),
             jsx("th", { key: "r", children: "结果" })
           ]
         });
@@ -1053,7 +1055,18 @@
                 children: (row.provider || "—") + "/" + (row.model || "—")
               }),
               jsx("td", { key: "i", className: "avbhist-cImage", title: label, children: label }),
-              jsx("td", { key: "s", className: "avbhist-cCost", children: formatDuration(row.durationMs) }),
+              // 耗时只报识别时间（已剔除排队）；排队非零时补一行小字，
+              // 否则池满排队会被误读成「模型很慢」。
+              jsxs("td", {
+                key: "s",
+                className: "avbhist-cCost",
+                children: [
+                  formatDuration(row.durationMs),
+                  Number(row.waitMs) > 0
+                    ? jsx("span", { key: "w", className: "avbhist-wait", children: "排队 " + formatDuration(row.waitMs) })
+                    : null,
+                ],
+              }),
               jsx("td", {
                 key: "r",
                 className: ok ? "avbhist-ok" : "avbhist-fail",
