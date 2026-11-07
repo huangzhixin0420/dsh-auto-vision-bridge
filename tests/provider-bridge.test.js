@@ -40,7 +40,7 @@ function strictLlm(llm) {
  * 内部 provider 同时扮演两个角色：主模型（c2a/text）与视觉模型（c2a/vision），
  * 和真实部署一致 —— 转写走的是宿主的 llm 通道，不是另一条 HTTP 连接。
  */
-function harness({ providerBridge = {}, recognition = "图里是一只橘猫", recognitionError = null } = {}) {
+function harness({ providerBridge = {}, recognition = "图里是一只橘猫", recognitionError = null, history = null } = {}) {
   const seen = [];
   const reads = [];
   const recognitions = [];
@@ -89,6 +89,7 @@ function harness({ providerBridge = {}, recognition = "图里是一只橘猫", r
     innerProvider: INNER_PROVIDER,
     modelId: TEXT_MODEL,
     logger: ctx.logger,
+    history: () => history,
   });
   return { adapter, ctx, llm, client, attachments, seen, reads, recognitions, getConfig };
 }
@@ -293,4 +294,64 @@ test("历史 assistant 消息的归属改回内部 provider，否则 reasoning �
   assert.equal(forwarded.source.provider, INNER_PROVIDER);
   assert.deepEqual(forwarded.source.replayState, { blob: "reasoning-1" }, "replayState 必须还在");
   assert.equal(forwarded.role, "assistant");
+});
+
+// ── 识图历史：provider 层转写也要记账 ────────────────────────────────
+// 之前只有 inspect_image 那条路径记账，历史页看不到 provider 桥接的用量与耗时。
+test("provider 层转写成功后写一条 source=provider 的历史", async () => {
+  const records = [];
+  const history = { async record(record) { records.push(record); } };
+  const h = harness({ recognition: "唯一码 MNH-8842-LK", history });
+  const messages = [imageMessage([
+    { type: "text", text: "这是什么" },
+    { type: "image", attachment: attachment("sha256:hist1", "验证图.png") },
+  ])];
+  await streamOnce(h.adapter, messages);
+
+  assert.equal(records.length, 1, "每张图应记一条");
+  const rec = records[0];
+  assert.equal(rec.ok, true);
+  assert.equal(rec.source, "provider", "要与 inspect / bridge 区分开");
+  assert.equal(rec.attachmentId, "sha256:hist1");
+  assert.equal(rec.imageName, "验证图.png");
+  assert.equal(rec.provider, INNER_PROVIDER);
+  assert.equal(rec.model, VISION_MODEL);
+  assert.ok(Number.isFinite(rec.durationMs));
+  assert.equal(rec.error, "");
+});
+
+test("provider 层转写失败也记账，带上失败原因", async () => {
+  const records = [];
+  const history = { async record(record) { records.push(record); } };
+  const h = harness({ recognitionError: new Error("视觉模型 502"), history });
+  const messages = [imageMessage([
+    { type: "image", attachment: attachment("sha256:hist2", "坏图.png") },
+  ])];
+  await streamOnce(h.adapter, messages);
+
+  assert.equal(records.length, 1);
+  assert.equal(records[0].ok, false);
+  assert.equal(records[0].source, "provider");
+  assert.match(records[0].error, /502/);
+});
+
+test("没有账本时不炸，转写照常完成", async () => {
+  const h = harness({ recognition: "照常识别", history: null });
+  const messages = [imageMessage([
+    { type: "image", attachment: attachment("sha256:hist3", "图.png") },
+  ])];
+  await streamOnce(h.adapter, messages);
+  const forwarded = h.seen.at(-1).messages.flatMap((m) => m.content).filter((b) => b.type === "text");
+  assert.ok(forwarded.some((b) => b.text.includes("照常识别")));
+});
+
+test("记账抛错不影响转写：历史是旁路", async () => {
+  const history = { async record() { throw new Error("账本坏了"); } };
+  const h = harness({ recognition: "识别仍然成功", history });
+  const messages = [imageMessage([
+    { type: "image", attachment: attachment("sha256:hist4", "图.png") },
+  ])];
+  await streamOnce(h.adapter, messages);
+  const forwarded = h.seen.at(-1).messages.flatMap((m) => m.content).filter((b) => b.type === "text");
+  assert.ok(forwarded.some((b) => b.text.includes("识别仍然成功")));
 });

@@ -117,3 +117,48 @@ test("配置容错：非法值回落默认，合法值原样保留", () => {
   assert.equal(dumpDirOf({ dumpDir: "  " }).length > 0, true);
   assert.match(dumpDirOf({ dumpDir: "/tmp/custom" }), /custom$/);
 });
+
+// ── 视觉模型的内部独白 ────────────────────────────────────────────────
+// 实测原文：视觉模型会把「用户要我做什么」复述一遍再开始识别。这段独白会把
+// 真正的结论往后挤，转写超阈值时摘要只留头尾，中段信息正好被顶掉。
+test("剥掉视觉模型开头的任务复述", async () => {
+  const { stripModelPrelude } = await import("../lib/markers.js");
+  const raw = "The user wants me to accurately identify the image, describe key visual "
+    + "content, and transcribe the text as completely as possible.\n\n"
+    + "# 图片内容描述\n\n标题：视觉桥接验证图 · ZX-7731-QQ\n唯一码 MNH-8842-LK";
+  const out = stripModelPrelude(raw);
+  assert.ok(!out.includes("The user wants me to"), "独白应被剥掉");
+  assert.ok(out.startsWith("# 图片内容描述"), "真正的答案应保留并前移");
+  assert.ok(out.includes("MNH-8842-LK"), "识别内容不能丢");
+});
+
+test("中文复述与 Let me 开头同样剥掉", async () => {
+  const { stripModelPrelude } = await import("../lib/markers.js");
+  for (const prelude of ["用户要求我识别这张图片。", "Let me look at the image.", "I need to describe this."]) {
+    const raw = `${prelude}\n\n正文：唯一码 MNH-8842-LK，校验值 62.5%`;
+    const out = stripModelPrelude(raw);
+    assert.ok(!out.startsWith(prelude.slice(0, 6)), `${prelude} 应被剥掉`);
+    assert.ok(out.includes("MNH-8842-LK"));
+  }
+});
+
+test("没有独白时原样返回，且不误伤以标题开头的内容", async () => {
+  const { stripModelPrelude } = await import("../lib/markers.js");
+  const clean = "# 图片内容描述\n\n唯一码 MNH-8842-LK";
+  assert.equal(stripModelPrelude(clean), clean);
+  // 以 markdown 标题开头的段落永远不当独白处理。
+  const heading = "# The user wants me to know this is a heading\n\n正文";
+  assert.equal(stripModelPrelude(heading), heading);
+});
+
+test("剥完几乎不剩东西时退回原文（安全阀）", async () => {
+  const { stripModelPrelude } = await import("../lib/markers.js");
+  const raw = "The user wants me to identify this image.\n\n短";
+  assert.equal(stripModelPrelude(raw), raw, "剥完不足 20 字应退回原文");
+});
+
+test("空输入不炸", async () => {
+  const { stripModelPrelude } = await import("../lib/markers.js");
+  assert.equal(stripModelPrelude(""), "");
+  assert.equal(stripModelPrelude(null), "");
+});
