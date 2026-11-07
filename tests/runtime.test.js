@@ -190,7 +190,12 @@ test("标准清单声明 bundle patch 与 web client，源码不碰真实 dispat
   const runtime = await readFile(new URL("../lib/runtime.js", import.meta.url), "utf8");
   assert.equal((runtime.match(/tools\.register\(/g) ?? []).length, 1);
   assert.doesNotMatch(runtime, /vision_[a-z]/);
-  assert.doesNotMatch(runtime, /registration\s*\(|prepareCall|adapter\s*=/);
+  // 插件不改写宿主既有的 dispatch 能力：只注册自己那一个包装 provider，
+  // 不覆盖别人的 adapter、不给别人换 stream。provider 层桥接里 reattribute
+  // 之类的改写都在自己 adapter 内部完成。
+  assert.doesNotMatch(runtime, /\.dispatch\s*=/);
+  assert.doesNotMatch(runtime, /\.stream\s*=/);
+  assert.equal((runtime.match(/registerAdapter\(/g) ?? []).length, 1, "只应注册一个包装 provider");
 });
 
 test("配置 schema 暴露并发、池与重试项，且顶层为 volatile", async () => {
@@ -282,4 +287,19 @@ test("诊断视图反映熔断状态：冷却中的条目可见且带剩余毫�
   assert.equal(cooldowns.c2avision.failures, 1);
 
   for (const dispose of f.rootEffects.reverse()) await dispose?.();
+});
+
+test("providerBridge 的子字段默认值不能被空对象默认值吃掉", async () => {
+  const manifest = await import("../index.js");
+  const schema = manifest.Config;
+  const bridge = schema.dict.providerBridge;
+  assert.equal(bridge.type, "object");
+  // schemastery 给 object 类型自动补的默认值是空对象；写成 .default({}) 会让
+  // 整个对象被替换，子字段默认值（enabled 等）全部失效，开关会被静默吞掉。
+  for (const field of ["enabled", "providerId", "innerProvider", "displayName"]) {
+    assert.ok(Object.hasOwn(bridge.dict, field), `providerBridge 缺少字段 ${field}`);
+  }
+  const empty = bridge.meta?.default;
+  assert.ok(empty === undefined || Object.keys(empty).length > 0,
+    `providerBridge 的默认值不能是空对象（会把子字段默认值吃掉）：${JSON.stringify(empty)}`);
 });
