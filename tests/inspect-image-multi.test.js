@@ -103,7 +103,7 @@ test("单张失败只影响它自己，其余照常返回", async () => {
 
 test("path 与 attachmentId 可同时提供，序号按 path 在前、attachmentId 在后", async () => {
   const h = harness();
-  const ref = { attachmentId: "sha256:multi", mediaType: "image/png", bytes: bytes.byteLength, width: 1, height: 1, name: "m.png" };
+  const ref = { attachmentId: "sha256:" + "b".repeat(64), mediaType: "image/png", bytes: bytes.byteLength, width: 1, height: 1, name: "m.png" };
   const session = {
     header: { cwd: tempDir },
     events: [{ type: "user/message", data: { content: [{ type: "image", attachment: ref }] } }],

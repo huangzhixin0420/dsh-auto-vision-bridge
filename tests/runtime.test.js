@@ -123,7 +123,7 @@ test("运行时将宿主 attachments 服务接入 attachmentId 复核，并保�
   const f = cordisFixture(config);
   const data = Buffer.from("runtime-attachment-bytes");
   const ref = {
-    attachmentId: "sha256:runtime",
+    attachmentId: `sha256:${"c3".repeat(32)}`,
     mediaType: "image/png",
     bytes: data.byteLength,
     width: 2,
@@ -138,7 +138,7 @@ test("运行时将宿主 attachments 服务接入 attachmentId 复核，并保�
   // llm 通道要求图片先落成持久引用。
   const admitted = [];
   f.services.attachments.saveImages = async (inputs) => inputs.map((input) => {
-    const saved = { attachmentId: "sha256:admitted", mediaType: input.mediaType, bytes: input.data.byteLength };
+    const saved = { attachmentId: `sha256:${"d4".repeat(32)}`, mediaType: input.mediaType, bytes: input.data.byteLength };
     admitted.push(saved);
     return saved;
   });

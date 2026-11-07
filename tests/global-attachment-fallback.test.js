@@ -53,23 +53,34 @@ test("会话里没有时从全局对象库补读（完整 ID）", async (t) => {
   assert.match(got.mediaType, /^image\//);
 });
 
-test("会话里没有时用短前缀也能补读", async (t) => {
+test("会话里没有时，短前缀被直接拒绝（不猜前缀，避免静默读错图）", async (t) => {
   const target = await anyGlobalObject();
   if (!target) return t.skip("本机全局附件库为空");
-  const got = await loadAttachmentById({}, emptySession, `sha256:${target.slice(0, 8)}`, testConfig());
-  assert.equal(got.attachmentId, `sha256:${target}`);
+  await assert.rejects(
+    () => loadAttachmentById({}, emptySession, `sha256:${target.slice(0, 8)}`, testConfig()),
+    /不完整/,
+  );
 });
+
+/** 绝不可能存在的完整 ID：64 位 hex，撞上真实对象的概率可忽略。 */
+const ABSENT = `sha256:${"0123456789abcdef".repeat(4)}`;
 
 test("全局库里也没有时报「未找到」", async () => {
   await assert.rejects(
-    () => loadAttachmentById({}, emptySession, "sha256:deadbeefdeadbeefdead", testConfig()),
+    () => loadAttachmentById({}, emptySession, ABSENT, testConfig()),
     /未找到图片附件/,
   );
 });
 
 test("非十六进制 ID 不会被当成路径去扫", async () => {
+  // 不完整 / 非 hex 一律在进入文件系统之前被拒，永远走不到拼路径那一步。
   await assert.rejects(
     () => loadAttachmentById({}, emptySession, "sha256:../../etc/passwd", testConfig()),
-    /未找到图片附件/,
+    /不完整/,
+  );
+  // 长度补齐但含非 hex 字符的，也不能被拼成路径。
+  await assert.rejects(
+    () => loadAttachmentById({}, emptySession, `sha256:${"z".repeat(64)}`, testConfig()),
+    /不完整/,
   );
 });

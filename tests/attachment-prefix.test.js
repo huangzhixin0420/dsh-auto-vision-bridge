@@ -1,11 +1,29 @@
-import test from "node:test";
+import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   collectImageRefs,
-  findUserImageAttachmentByPrefix,
+  isCompleteAttachmentId,
   loadAttachmentById,
+  truncatedIdMessage,
 } from "../lib/image-source.js";
 import { testConfig } from "./helpers.js";
+
+/**
+ * 把 HOME 指到空目录：全局附件库回落读 `${homedir()}/.dsh/attachments/...`，
+ * 不隔离的话测试会摸到本机真实附件库 —— 之前 `FULL_B` 就在真库里存在，
+ * 表现出来是「本该找不到却读回了图」，非常难查。
+ */
+let sandbox;
+before(() => {
+  sandbox = mkdtempSync(join(tmpdir(), "avb-attachment-test-"));
+  process.env.HOME = sandbox;
+});
+after(() => {
+  if (sandbox) rmSync(sandbox, { recursive: true, force: true });
+});
 
 /** 真实长度的附件 ID：sha256: + 64 位 hex。 */
 const FULL_A = "sha256:b72ce640f2d6b6762efa429866ca7c8d560a1eba6e60fed2b1ba8eb809c67602";
@@ -28,50 +46,49 @@ function imageRef(id, name) {
   return { attachmentId: id, mediaType: "image/png", name, bytes: 4 };
 }
 
-test("前缀唯一匹配：只抄前 8 位也能定位到完整 ID", () => {
-  const ref = imageRef(FULL_A, "a.png");
-  const session = sessionWith([ref, imageRef(FULL_B, "b.png")]);
-  const { ref: matched, candidates } = findUserImageAttachmentByPrefix(session, "sha256:b72ce640");
-  assert.strictEqual(matched, ref, "应返回原始 ref 对象（保留 bytes 等字段）");
-  assert.equal(candidates.length, 1);
+/** 一个不会真的读到磁盘的 ctx。 */
+function readOnlyCtx(read) {
+  return {
+    attachments: {
+      async readImage(ref) {
+        read.push(ref.attachmentId);
+        return { data: Buffer.from("x"), mediaType: "image/png", ref };
+      },
+    },
+    logger: { info() {}, warn() {} },
+  };
+}
+
+test("isCompleteAttachmentId：只认完整 64 位", () => {
+  assert.equal(isCompleteAttachmentId(FULL_A), true);
+  assert.equal(isCompleteAttachmentId("sha256:" + FULL_A.slice(7).toUpperCase()), true, "大小写不影响完整性");
+  assert.equal(isCompleteAttachmentId("  " + FULL_A + "  "), true, "首尾空白不影响完整性");
+  assert.equal(isCompleteAttachmentId(FULL_A.slice(7)), true, "缺 sha256: 前缀但 64 位仍是完整 ID");
+
+  assert.equal(isCompleteAttachmentId("sha256:b72ce640"), false, "8 位前缀不是完整 ID");
+  assert.equal(isCompleteAttachmentId("sha256:b72ce640f2d6"), false, "12 位前缀不是完整 ID");
+  assert.equal(isCompleteAttachmentId("sha256:"), false);
+  assert.equal(isCompleteAttachmentId(""), false);
+  assert.equal(isCompleteAttachmentId("   "), false);
+  assert.equal(isCompleteAttachmentId(undefined), false);
+  assert.equal(isCompleteAttachmentId(FULL_A + "0"), false, "超过 64 位也不算");
 });
 
-test("前缀匹配容忍大小写、缺失 sha256: 前缀与首尾空白", () => {
-  const ref = imageRef(FULL_A, "a.png");
-  const session = sessionWith([ref, imageRef(FULL_B, "b.png")]);
-  for (const written of [
-    "sha256:B72CE640",
-    "b72ce640",
-    "  sha256:b72ce640  ",
-    FULL_A,
-  ]) {
-    const { ref: matched } = findUserImageAttachmentByPrefix(session, written);
-    assert.strictEqual(matched, ref, `应匹配：${JSON.stringify(written)}`);
-  }
+test("truncatedIdMessage：说清位数、列出全部完整 ID、要求重抄", () => {
+  const available = [imageRef(FULL_A, "a.png"), imageRef(FULL_C, "c.png")];
+  const message = truncatedIdMessage("sha256:b72ce640", available);
+  assert.match(message, /不完整/);
+  assert.match(message, /8 位/);
+  assert.match(message, /64 位/);
+  assert.match(message, new RegExp(FULL_A), "必须给出完整 ID 供重抄");
+  assert.match(message, new RegExp(FULL_C));
+  assert.match(message, /重试/);
 });
 
-test("前缀撞车时不猜，把候选全部返回", () => {
-  const session = sessionWith([imageRef(FULL_A, "a.png"), imageRef(FULL_C, "c.png")]);
-  // FULL_A 与 FULL_C 都以 b 开头，但 b72 只有 A 有；这里用共同的 b 前缀制造撞车。
-  const { ref: matched, candidates } = findUserImageAttachmentByPrefix(session, "sha256:b");
-  assert.equal(matched, undefined, "多匹配时不应返回唯一结果");
-  assert.equal(candidates.length, 2);
-});
-
-test("空 ID 不匹配任何东西（空串是所有 ID 的前缀）", () => {
-  const session = sessionWith([imageRef(FULL_A, "a.png")]);
-  for (const empty of ["", "   ", "sha256:", "SHA256:"]) {
-    const { ref: matched, candidates } = findUserImageAttachmentByPrefix(session, empty);
-    assert.equal(matched, undefined, `空值不应匹配：${JSON.stringify(empty)}`);
-    assert.equal(candidates.length, 0);
-  }
-});
-
-test("完全对不上时返回空结果，交给原错误路径处理", () => {
-  const session = sessionWith([imageRef(FULL_A, "a.png")]);
-  const { ref: matched, candidates } = findUserImageAttachmentByPrefix(session, "sha256:ffff0000");
-  assert.equal(matched, undefined);
-  assert.equal(candidates.length, 0);
+test("truncatedIdMessage：会话里没有图片时明说", () => {
+  const message = truncatedIdMessage("sha256:b72ce640", []);
+  assert.match(message, /不完整/);
+  assert.match(message, /没有任何图片附件/);
 });
 
 test("collectImageRefs 覆盖 user/message、inbox 与 compaction 摘要里的图片", () => {
@@ -89,74 +106,76 @@ test("collectImageRefs 覆盖 user/message、inbox 与 compaction 摘要里的�
   assert.deepEqual(ids.sort(), [FULL_A, FULL_B, FULL_C].sort());
 });
 
-test("loadAttachmentById：精确命中优先于前缀匹配", async () => {
-  const exact = imageRef(FULL_A, "a.png");
-  const session = sessionWith([exact, imageRef(FULL_C, "c.png")]);
+test("loadAttachmentById：完整 ID 命中会话内的图", async () => {
   const read = [];
-  const ctx = {
-    attachments: {
-      async readImage(ref) {
-        read.push(ref.attachmentId);
-        return { data: Buffer.from("x"), mediaType: "image/png", ref };
-      },
-    },
-    logger: { info() {}, warn() {} },
-  };
-  const image = await loadAttachmentById(ctx, session, FULL_A, testConfig());
+  const session = sessionWith([imageRef(FULL_A, "a.png"), imageRef(FULL_C, "c.png")]);
+  const image = await loadAttachmentById(readOnlyCtx(read), session, FULL_A, testConfig());
   assert.equal(image.attachmentId, FULL_A);
   assert.deepEqual(read, [FULL_A]);
 });
 
-test("loadAttachmentById：精确失败时用前缀补全，并记一条 info 日志", async () => {
-  const session = sessionWith([imageRef(FULL_A, "a.png"), imageRef(FULL_C, "c.png")]);
-  const logs = [];
-  const ctx = {
-    attachments: {
-      async readImage(ref) {
-        return { data: Buffer.from("x"), mediaType: "image/png", ref };
-      },
-    },
-    logger: { info: (m) => logs.push(m), warn() {} },
-  };
-  const image = await loadAttachmentById(ctx, session, "sha256:b72ce640", testConfig());
-  assert.equal(image.attachmentId, FULL_A);
-  assert.equal(logs.length, 1);
-  assert.match(logs[0], /按前缀补全/);
+test("loadAttachmentById：完整 ID 的大小写与空白都容忍", async () => {
+  const read = [];
+  const session = sessionWith([imageRef(FULL_A, "a.png")]);
+  for (const written of ["SHA256:" + FULL_A.slice(7).toUpperCase(), "  " + FULL_A + "  ", FULL_A.slice(7)]) {
+    const image = await loadAttachmentById(readOnlyCtx(read), session, written, testConfig());
+    assert.equal(image.attachmentId, FULL_A, `应命中：${JSON.stringify(written.slice(0, 20))}`);
+  }
 });
 
-test("loadAttachmentById：前缀撞车时报错并列出候选，不擅自选一张", async () => {
+test("loadAttachmentById：抄短的 ID 直接拒绝，不猜前缀", async () => {
+  const read = [];
   const session = sessionWith([imageRef(FULL_A, "a.png"), imageRef(FULL_C, "c.png")]);
-  const ctx = {
-    attachments: {
-      async readImage(ref) { return { data: Buffer.from("x"), mediaType: "image/png", ref }; },
-    },
-    logger: { info() {}, warn() {} },
-  };
   await assert.rejects(
-    () => loadAttachmentById(ctx, session, "sha256:b", testConfig()),
+    () => loadAttachmentById(readOnlyCtx(read), session, "sha256:b72ce640", testConfig()),
     (error) => {
-      assert.match(error.message, /匹配到 2 张图片/);
-      assert.match(error.message, /请改用完整 ID/);
-      assert.match(error.message, new RegExp(FULL_A));
+      assert.match(error.message, /不完整/);
+      assert.match(error.message, new RegExp(FULL_A), "报错要给出可重抄的完整 ID");
       assert.match(error.message, new RegExp(FULL_C));
       return true;
     },
   );
+  assert.deepEqual(read, [], "拒绝时不应读图");
 });
 
-test("loadAttachmentById：完全找不到时仍走原来的「列出可用图片」提示", async () => {
+test("loadAttachmentById：即使前缀唯一命中也要拒绝（不静默补全）", async () => {
+  // FULL_A 的前 8 位在会话里唯一，旧实现会直接补全；现在必须报错。
+  const read = [];
   const session = sessionWith([imageRef(FULL_A, "a.png")]);
-  const ctx = {
-    attachments: {
-      async readImage(ref) { return { data: Buffer.from("x"), mediaType: "image/png", ref }; },
-    },
-    logger: { info() {}, warn() {} },
-  };
   await assert.rejects(
-    () => loadAttachmentById(ctx, session, "sha256:ffff0000", testConfig()),
+    () => loadAttachmentById(readOnlyCtx(read), session, "sha256:b72ce640", testConfig()),
+    (error) => {
+      assert.match(error.message, /不完整/);
+      return true;
+    },
+  );
+  assert.deepEqual(read, [], "唯一前缀也不应被接受");
+});
+
+test("loadAttachmentById：空 ID 拒绝", async () => {
+  const read = [];
+  const session = sessionWith([imageRef(FULL_A, "a.png")]);
+  for (const empty of ["", "   ", "sha256:"]) {
+    await assert.rejects(
+      () => loadAttachmentById(readOnlyCtx(read), session, empty, testConfig()),
+      (error) => {
+        assert.match(error.message, /不完整|为空/);
+        return true;
+      },
+      `空值应拒绝：${JSON.stringify(empty)}`,
+    );
+  }
+  assert.deepEqual(read, []);
+});
+
+test("loadAttachmentById：完整但会话里没有时，列出可用图片", async () => {
+  const read = [];
+  const session = sessionWith([imageRef(FULL_A, "a.png")]);
+  await assert.rejects(
+    () => loadAttachmentById(readOnlyCtx(read), session, FULL_B, testConfig()),
     (error) => {
       assert.match(error.message, /当前会话未找到图片附件/);
-      assert.match(error.message, /当前会话可用的图片附件/);
+      assert.match(error.message, new RegExp(FULL_A), "列出可用图片的完整 ID，供模型纠正");
       return true;
     },
   );

@@ -141,9 +141,13 @@ test("本地图片超过 maxImageBytes 时在视觉请求前失败", async () =>
   assert.equal(h.llm.calls.length, 0);
 });
 
+/** 完整附件 ID（只认完整 ID 后，测试也不能再用短串）。 */
+const REVIEW_ID = `sha256:${"a1".repeat(32)}`;
+const OTHER_ID = `sha256:${"b2".repeat(32)}`;
+
 function attachmentFixture() {
   const ref = {
-    attachmentId: "sha256:review",
+    attachmentId: REVIEW_ID,
     mediaType: "image/png",
     bytes: bytes.byteLength,
     width: 1,
@@ -239,7 +243,7 @@ test("附件读取失败时该条目失败，其余继续，不伪造识别文�
     client: { async recognize() { recognitions++; return "伪造文本"; } },
     getConfig: () => testConfig(),
   });
-  const result = await tool.execute({ attachmentId: "sha256:review" }, { agent: { session } });
+  const result = await tool.execute({ attachmentId: REVIEW_ID }, { agent: { session } });
   assert.equal(result.length, 1);
   assert.equal(result[0].ok, false);
   assert.match(result[0].error, /附件读取失败测试/);
@@ -255,12 +259,12 @@ test("attachmentId 未在当前会话用户图片中登记时拒绝读取", asyn
     getConfig: () => testConfig(),
   });
   const result = await tool.execute(
-    { attachmentId: "sha256:other" },
+    { attachmentId: OTHER_ID },
     { agent: { session: { events: [] } } },
   );
   assert.equal(result.length, 1);
   assert.equal(result[0].ok, false);
-  assert.match(result[0].error, /当前会话未找到图片附件：sha256:other/);
+  assert.match(result[0].error, new RegExp(`当前会话未找到图片附件：${OTHER_ID}`));
   assert.equal(reads, 0);
 });
 
