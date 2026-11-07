@@ -112,3 +112,24 @@ test("重试后仍失败时路由记的是最后一次尝试的模型", async ()
     },
   );
 });
+
+// ---- 空转识别：模型没收到图时必须判失败 ----
+//
+// 实测场景：池里混进不支持视觉的模型（把主模型当备用候选），它回
+// 「图片被省略了，我看不到图片」，HTTP 200 内容非空，曾被记成成功。
+
+test("识别：模型回「我看不到图片」判定为空转，不算成功", async () => {
+  const h = harness({ "c2a/vision": "用户发了一张图片，但我的模型只接受文本，图片被省略了。我看不到图片。" });
+  const image = imageOf("像素", "sha256:blind");
+  const attachmentRef = await admitImage(h.ctx, image);
+  await assert.rejects(() => h.client.recognize({ ...image, attachmentRef }), /没有收到图片/);
+});
+
+test("looksBlind：正常转写不误判，空回复与固定句式判空转", async () => {
+  const { looksBlind } = await import("../lib/vision-client.js");
+  assert.equal(looksBlind(""), true);
+  assert.equal(looksBlind("我看不到图片"), true);
+  assert.equal(looksBlind("Image omitted, the model accepts text only."), true);
+  const real = "这是一张统计页截图，标题是「子代理模型池 · 统计」，展示分配次数、模型请求、token 用量（未缓存输入/输出/缓存读/缓存写）、回退父路由、探测失败、路由分布、池占用与子代理会话明细。";
+  assert.equal(looksBlind(real), false);
+});
