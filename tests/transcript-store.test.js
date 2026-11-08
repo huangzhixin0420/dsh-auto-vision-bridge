@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  DEFAULT_DUMP_THRESHOLD,
+  DEFAULT_DUMP_THRESHOLD, DEFAULT_SUMMARY_LENGTH,
   dumpDirOf,
   dumpThresholdOf,
   storeTranscript,
@@ -113,7 +113,7 @@ test("配置容错：非法值回落默认，合法值原样保留", () => {
   assert.equal(dumpThresholdOf({ dumpThreshold: -5 }), DEFAULT_DUMP_THRESHOLD);
   assert.equal(dumpThresholdOf({ dumpThreshold: "x" }), DEFAULT_DUMP_THRESHOLD);
   assert.equal(summaryLengthOf({ summaryLength: 50 }), 50);
-  assert.equal(summaryLengthOf({ summaryLength: 0 }), 400);
+  assert.equal(summaryLengthOf({ summaryLength: 0 }), DEFAULT_SUMMARY_LENGTH);
   assert.equal(dumpDirOf({ dumpDir: "  " }).length > 0, true);
   assert.match(dumpDirOf({ dumpDir: "/tmp/custom" }), /custom$/);
 });
