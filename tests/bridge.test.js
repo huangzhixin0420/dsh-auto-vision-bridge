@@ -43,7 +43,7 @@ test("纯文本消息保持同引用，且不读取附件、不调用视觉模�
   assert.equal(f.recognitions.length, 0);
 });
 
-test("文本模型保留原图并另存转写：content 保持干净，附件身份和识别文本完整", async () => {
+test("文本模型保留原图并把转写块并进 content：附件身份和识别文本完整", async () => {
   const f = fixture();
   const image = { type: "image", attachment: attachment("sha256:one", "界面.png") };
   const userText = { type: "text", text: "请看这张图" };
@@ -53,10 +53,15 @@ test("文本模型保留原图并另存转写：content 保持干净，附件身
   assert.notStrictEqual(bridged, message);
   assert.equal(result.changed, true);
   assert.equal(bridged.id, "message-id");
-  // content 原样保留：只有用户自己的文字与原图，转写不进 content。
+  // 原块原样保留，转写块紧跟在那张图之后 —— 模型这一轮直接读得到文字。
   assert.strictEqual(bridged.content[0], userText);
   assert.strictEqual(bridged.content[1], image);
-  assert.equal(bridged.content.length, 2);
+  assert.equal(bridged.content.length, 3);
+  const transcriptionBlockInContent = bridged.content[2];
+  assert.equal(transcriptionBlockInContent.type, "text");
+  assert.match(transcriptionBlockInContent.text, /界面\.png/);
+  assert.match(transcriptionBlockInContent.text, /识别:sha256:one/);
+  assert.equal(bridged.transcription, undefined, "模型侧不再依赖 transcription 字段注入");
   const transcription = transcriptionOf(bridged);
   assert.match(transcription, /界面\.png/);
   assert.match(transcription, /sha256:one/);
@@ -77,12 +82,15 @@ test("混合文字与多图保持原顺序，每张图各调用一次", async ()
   const result = await bridgeMessages([imageMessage(blocks)], f);
   const bridged = result.messages[0];
   assert.deepEqual(f.recognitions, ["sha256:a", "sha256:b"]);
-  // content 保持原样，块序不变。
+  // 原块顺序不变，每张图后面紧跟它自己的转写块。
   assert.strictEqual(bridged.content[0], blocks[0]);
   assert.strictEqual(bridged.content[1], a);
-  assert.strictEqual(bridged.content[2], blocks[2]);
-  assert.strictEqual(bridged.content[3], b);
-  assert.strictEqual(bridged.content[4], blocks[4]);
+  assert.match(bridged.content[2].text, /识别:sha256:a/);
+  assert.strictEqual(bridged.content[3], blocks[2]);
+  assert.strictEqual(bridged.content[4], b);
+  assert.match(bridged.content[5].text, /识别:sha256:b/);
+  assert.strictEqual(bridged.content[6], blocks[4]);
+  assert.equal(bridged.content.length, 7);
   // 转写按图的原顺序分段保存。
   assert.match(transcriptionPart(bridged, 0), /识别:sha256:a/);
   assert.match(transcriptionPart(bridged, 1), /识别:sha256:b/);
@@ -110,9 +118,14 @@ test("多图并发识别：请求重叠发起，结果仍按原顺序落位", as
   const bridged = result.messages[0];
   assert.equal(peak, 3);
   assert.deepEqual(order.sort(), ["sha256:a", "sha256:b", "sha256:c"]);
+  // 并发识别，但转写块仍按原图顺序落位：a 的转写紧跟 a，b 紧跟 b，c 紧跟 c。
   assert.strictEqual(bridged.content[0], blocks[0]);
-  assert.strictEqual(bridged.content[1], blocks[1]);
-  assert.strictEqual(bridged.content[2], blocks[2]);
+  assert.match(bridged.content[1].text, /识别:sha256:a/);
+  assert.strictEqual(bridged.content[2], blocks[1]);
+  assert.match(bridged.content[3].text, /识别:sha256:b/);
+  assert.strictEqual(bridged.content[4], blocks[2]);
+  assert.match(bridged.content[5].text, /识别:sha256:c/);
+  assert.equal(bridged.content.length, 6);
   assert.match(transcriptionPart(bridged, 0), /识别:sha256:a/);
   assert.match(transcriptionPart(bridged, 1), /识别:sha256:b/);
   assert.match(transcriptionPart(bridged, 2), /识别:sha256:c/);
@@ -133,10 +146,13 @@ test("单图失败注入明确失败标记，其他图片与文字继续", async
   assert.match(transcriptionPart(bridged, 0), /图片识别失败：视觉 API key 缺失/);
   assert.doesNotMatch(transcriptionPart(bridged, 0), /成功图片/);
   assert.match(transcriptionPart(bridged, 1), /成功图片/);
-  // content 原样：失败也不影响用户文字。
+  // 失败只让那一张变成失败标记；原图与用户文字都保留。
   assert.strictEqual(bridged.content[0], bad);
-  assert.strictEqual(bridged.content[1], good);
-  assert.strictEqual(bridged.content[2], tail);
+  assert.match(bridged.content[1].text, /图片识别失败：视觉 API key 缺失/);
+  assert.strictEqual(bridged.content[2], good);
+  assert.match(bridged.content[3].text, /成功图片/);
+  assert.strictEqual(bridged.content[4], tail);
+  assert.equal(bridged.content.length, 5);
   assert.deepEqual(f.recognitions, ["sha256:bad", "sha256:good"]);
 });
 

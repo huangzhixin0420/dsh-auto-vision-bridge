@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bridgeMessages } from "../lib/bridge.js";
 import { createInspectImageTool } from "../lib/inspect-image.js";
-import { attachment, fakeAttachments, imageMessage, testConfig } from "./helpers.js";
+import { attachment, fakeAttachments, imageMessage, testConfig, transcriptionOf } from "./helpers.js";
 
 /** 收集记账内容的假账本。 */
 function fakeHistory() {
@@ -134,7 +134,7 @@ test("记账失败不影响识图结果", async () => {
     sessionId: "s",
   });
   assert.equal(result.changed, true);
-  assert.match(result.messages[0].transcription, /识别正文/);
+  assert.match(transcriptionOf(result.messages[0]), /识别正文/);
 });
 
 test("inspect_image 工具链路记账，来源标为 inspect", async () => {
@@ -183,7 +183,7 @@ test("旧客户端只有 recognize 时仍能识图，记账里没有模型信息
     history,
     sessionId: "s",
   });
-  assert.match(result.messages[0].transcription, /旧接口结果/);
+  assert.match(transcriptionOf(result.messages[0]), /旧接口结果/);
   assert.equal(history.records.length, 1);
   assert.equal(history.records[0].provider, "");
   assert.equal(history.records[0].model, "");

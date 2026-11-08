@@ -1,3 +1,4 @@
+import { BRIDGE_END, BRIDGE_START } from "../lib/markers.js";
 export function testConfig(overrides = {}) {
   return {
     enabled: true,
@@ -32,12 +33,19 @@ export function imageMessage(blocks, extra = {}) {
 /**
  * 取一条消息的转写文本。
  *
- * 转写不再进 content（DSH 会把 content 的 text block 拼成用户气泡），
- * 而是另存于消息的 transcription 字段，由模型侧注入。
+ * v0.3.0 起转写曾挂在 transcription 字段、靠 llm/stream 注入，而注入通道不生效；
+ * 现在恢复成把转写块并进 content（模型侧唯一可靠通道）。两种形态都认，便于同时
+ * 覆盖「模型侧带转写块」与「写回会话时只挂 transcription 字段」两类断言。
  */
 export function transcriptionOf(message) {
   const value = message?.transcription;
-  return typeof value === "string" ? value : "";
+  if (typeof value === "string" && value) return value;
+  const blocks = Array.isArray(message?.content) ? message.content : [];
+  return blocks
+    .filter((block) => block?.type === "text" && typeof block.text === "string"
+      && block.text.includes(BRIDGE_START) && block.text.includes(BRIDGE_END))
+    .map((block) => block.text)
+    .join("\n\n");
 }
 
 /**
