@@ -1,6 +1,6 @@
 {
   "name": "dsh-auto-vision-bridge",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "DSH 文本模型图片自动转写桥接，并提供共享视觉客户端的 inspect_image 工具。",
   "keywords": [
     "deepseek-harness",
