@@ -73,6 +73,39 @@ test("流式响应的文本能从多种 chunk 形态里取出来", () => {
   assert.equal(extractText([]), "");
 });
 
+test("文本 delta 正常取，reasoning delta 必须丢掉", () => {
+  // DSH 的 StreamChunk：text-delta 与 reasoning-delta 都带 text 字段，
+  // 只判断 chunk.text 会把思考链拼进转写正文（实测污染过 29KB）。
+  const chunks = [
+    { type: "reasoning-delta", index: 0, text: "让我先想想这张图……" },
+    { type: "reasoning-delta", index: 0, text: "图上应该有七个条。" },
+    { type: "text-delta", index: 1, text: "截图：用量统计页" },
+    { type: "text-delta", index: 1, text: "，共 4.50B。" },
+  ];
+  assert.equal(extractText(chunks), "截图：用量统计页，共 4.50B。");
+});
+
+test("reasoning 的其他常见字段形态同样丢掉", () => {
+  assert.equal(extractText([{ type: "reasoning", text: "思考" }, { type: "text-delta", text: "正文" }]), "正文");
+  assert.equal(extractText([{ type: "thinking", text: "思考" }, { type: "text-delta", text: "正文" }]), "正文");
+  // OpenAI 原生流的 reasoning 块只带 delta.reasoning_content，没有 text
+  assert.equal(extractText([{ delta: { reasoning_content: "思考" } }, { delta: { text: "正文" } }]), "正文");
+  assert.equal(extractText([{ delta: { thinking: "思考" } }, { delta: { content: "正文" } }]), "正文");
+  // 同时带 reasoning 字段与正文的块，正文要保留
+  assert.equal(extractText([{ delta: { reasoning_content: "思考", content: "正文" } }]), "正文");
+});
+
+test("非正文控制块不会被当成文本", () => {
+  const chunks = [
+    { type: "block-start", index: 0, blockType: "text" },
+    { type: "text-delta", index: 0, text: "正文" },
+    { type: "tool-call-delta", index: 1, id: "t1", argumentsDelta: "{}" },
+    { type: "usage", usage: {} },
+    { type: "finish", reason: "stop" },
+  ];
+  assert.equal(extractText(chunks), "正文");
+});
+
 test("重试次数非法时按 0 处理", () => {
   assert.equal(retryLimitOf({ retries: 2 }), 2);
   assert.equal(retryLimitOf({ retries: "x" }), 0);
