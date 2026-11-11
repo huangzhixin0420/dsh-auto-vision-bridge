@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { attachPreStepBridge, bridgeMessages, repairLoggedImages } from "../lib/bridge.js";
-import { BRIDGE_END, BRIDGE_START, failedTranscriptionBlock, stripBridgedText, transcriptionBlock } from "../lib/markers.js";
-import { attachment, fakeAttachments, imageMessage, imageOf, testConfig, transcriptionOf, transcriptionPart } from "./helpers.js";
+import { attachPreStepBridge, bridgeMessages, noticeSummaryOf, repairLoggedImages, TRANSCRIPTION_SOURCE_KIND } from "../lib/bridge.js";
+import { failedTranscriptionBlock, transcriptionBlock } from "../lib/markers.js";
+import { attachment, fakeAttachments, imageMessage, testConfig, transcriptionOf, transcriptionPart } from "./helpers.js";
+
+// 2026-11-10 架构变更：转写不再并进原消息的 content，而是**独立成一条
+// user/message 事件**（source.kind = "auto-vision-bridge"、form = "notice"）。
+// 宿主据此把它渲染成折叠的上下文卡片，用户气泡永远干净；
+// 模型侧照常读到（事件即输入）。
 
 function fixture(overrides = {}) {
   const reads = [];
@@ -32,6 +34,11 @@ function fixture(overrides = {}) {
   return { ctx, client, reads, recognitions, admitted, getConfig: () => testConfig(), ...overrides };
 }
 
+/** 取一组消息里的转写消息（source.kind 是插件自己的那一种）。 */
+function transcriptionMessages(messages) {
+  return messages.filter((message) => message?.source?.kind === TRANSCRIPTION_SOURCE_KIND);
+}
+
 test("纯文本消息保持同引用，且不读取附件、不调用视觉模型", async () => {
   const f = fixture();
   const messages = [imageMessage([{ type: "text", text: "纯文本" }])];
@@ -43,34 +50,40 @@ test("纯文本消息保持同引用，且不读取附件、不调用视觉模�
   assert.equal(f.recognitions.length, 0);
 });
 
-test("文本模型保留原图并把转写块并进 content：附件身份和识别文本完整", async () => {
+test("转写成为独立事件：原消息 content 保持干净，模型侧仍能读到文字", async () => {
   const f = fixture();
   const image = { type: "image", attachment: attachment("sha256:one", "界面.png") };
   const userText = { type: "text", text: "请看这张图" };
   const message = imageMessage([userText, image], { id: "message-id" });
   const result = await bridgeMessages([message], f);
-  const bridged = result.messages[0];
-  assert.notStrictEqual(bridged, message);
   assert.equal(result.changed, true);
-  assert.equal(bridged.id, "message-id");
-  // 原块原样保留，转写块紧跟在那张图之后 —— 模型这一轮直接读得到文字。
-  assert.strictEqual(bridged.content[0], userText);
-  assert.strictEqual(bridged.content[1], image);
-  assert.equal(bridged.content.length, 3);
-  const transcriptionBlockInContent = bridged.content[2];
-  assert.equal(transcriptionBlockInContent.type, "text");
-  assert.match(transcriptionBlockInContent.text, /界面\.png/);
-  assert.match(transcriptionBlockInContent.text, /识别:sha256:one/);
-  assert.equal(bridged.transcription, undefined, "模型侧不再依赖 transcription 字段注入");
-  const transcription = transcriptionOf(bridged);
-  assert.match(transcription, /界面\.png/);
-  assert.match(transcription, /sha256:one/);
-  assert.match(transcription, /识别:sha256:one/);
-  assert.equal(stripBridgedText(transcription), "");
-  assert.ok(Object.isFrozen(bridged));
+
+  // 原消息 content 原样保留（消息本身是带标记的副本）。
+  assert.equal(result.messages[0].content.length, 2, "转写绝不进原消息的 content");
+  assert.strictEqual(result.messages[0].content[0], userText);
+  assert.strictEqual(result.messages[0].content[1], image);
+  // 消息本体带上「已转写」标记，避免历史修复重复识别同一张图。
+  assert.ok(result.messages[0].transcribed > 0, "原消息必须带已转写标记");
+
+  // 转写是独立的一条消息，source 让宿主归类为上下文注入而非用户气泡。
+  assert.equal(result.messages.length, 2);
+  const transcribed = result.messages[1];
+  assert.equal(transcribed.source.kind, TRANSCRIPTION_SOURCE_KIND);
+  assert.equal(transcribed.source.form, "notice");
+  assert.ok(typeof transcribed.source.summary === "string" && transcribed.source.summary.length > 0,
+    "notice 的 summary 必须非空，否则前端退化成 opaque");
+  assert.equal(transcribed.role, "user");
+  assert.ok(typeof transcribed.id === "string" && transcribed.id.length > 0, "消息必须有 id");
+
+  // 附件身份与识别文本完整。
+  const text = transcribed.content[0].text;
+  assert.match(text, /界面\.png/);
+  assert.match(text, /sha256:one/);
+  assert.match(text, /识别:sha256:one/);
+  assert.equal(transcribed.transcription, undefined, "不再依赖 transcription 字段");
 });
 
-test("混合文字与多图保持原顺序，每张图各调用一次", async () => {
+test("混合文字与多图：原消息一条，转写每图一条且按原顺序", async () => {
   const f = fixture();
   const a = { type: "image", attachment: attachment("sha256:a", "a.png") };
   const b = { type: "image", attachment: attachment("sha256:b", "b.png") };
@@ -80,20 +93,24 @@ test("混合文字与多图保持原顺序，每张图各调用一次", async ()
     { type: "text", text: "结尾" },
   ];
   const result = await bridgeMessages([imageMessage(blocks)], f);
-  const bridged = result.messages[0];
   assert.deepEqual(f.recognitions, ["sha256:a", "sha256:b"]);
-  // 原块顺序不变，每张图后面紧跟它自己的转写块。
-  assert.strictEqual(bridged.content[0], blocks[0]);
-  assert.strictEqual(bridged.content[1], a);
-  assert.match(bridged.content[2].text, /识别:sha256:a/);
-  assert.strictEqual(bridged.content[3], blocks[2]);
-  assert.strictEqual(bridged.content[4], b);
-  assert.match(bridged.content[5].text, /识别:sha256:b/);
-  assert.strictEqual(bridged.content[6], blocks[4]);
-  assert.equal(bridged.content.length, 7);
-  // 转写按图的原顺序分段保存。
-  assert.match(transcriptionPart(bridged, 0), /识别:sha256:a/);
-  assert.match(transcriptionPart(bridged, 1), /识别:sha256:b/);
+
+  // 原消息一条，content 原样。
+  assert.equal(result.messages.length, 3);
+  assert.strictEqual(result.messages[0].content[0], blocks[0]);
+  assert.strictEqual(result.messages[0].content[1], a);
+  assert.strictEqual(result.messages[0].content[2], blocks[2]);
+  assert.strictEqual(result.messages[0].content[3], b);
+  assert.strictEqual(result.messages[0].content[4], blocks[4]);
+  assert.equal(result.messages[0].content.length, 5, "原消息 content 不加任何块");
+
+  // 每张图一条转写，顺序与原图一致。
+  const transcribed = transcriptionMessages(result.messages);
+  assert.equal(transcribed.length, 2);
+  assert.match(transcribed[0].content[0].text, /识别:sha256:a/);
+  assert.match(transcribed[1].content[0].text, /识别:sha256:b/);
+  assert.match(transcriptionPart(result.messages, 0), /识别:sha256:a/);
+  assert.match(transcriptionPart(result.messages, 1), /识别:sha256:b/);
 });
 
 test("多图并发识别：请求重叠发起，结果仍按原顺序落位", async () => {
@@ -115,23 +132,18 @@ test("多图并发识别：请求重叠发起，结果仍按原顺序落位", as
     { type: "image", attachment: attachment("sha256:c", "c.png") },
   ];
   const result = await bridgeMessages([imageMessage(blocks)], f);
-  const bridged = result.messages[0];
   assert.equal(peak, 3);
   assert.deepEqual(order.sort(), ["sha256:a", "sha256:b", "sha256:c"]);
-  // 并发识别，但转写块仍按原图顺序落位：a 的转写紧跟 a，b 紧跟 b，c 紧跟 c。
-  assert.strictEqual(bridged.content[0], blocks[0]);
-  assert.match(bridged.content[1].text, /识别:sha256:a/);
-  assert.strictEqual(bridged.content[2], blocks[1]);
-  assert.match(bridged.content[3].text, /识别:sha256:b/);
-  assert.strictEqual(bridged.content[4], blocks[2]);
-  assert.match(bridged.content[5].text, /识别:sha256:c/);
-  assert.equal(bridged.content.length, 6);
-  assert.match(transcriptionPart(bridged, 0), /识别:sha256:a/);
-  assert.match(transcriptionPart(bridged, 1), /识别:sha256:b/);
-  assert.match(transcriptionPart(bridged, 2), /识别:sha256:c/);
+
+  // 并发识别，但转写仍按原图顺序落位。
+  const transcribed = transcriptionMessages(result.messages);
+  assert.equal(transcribed.length, 3);
+  assert.match(transcribed[0].content[0].text, /识别:sha256:a/);
+  assert.match(transcribed[1].content[0].text, /识别:sha256:b/);
+  assert.match(transcribed[2].content[0].text, /识别:sha256:c/);
 });
 
-test("单图失败注入明确失败标记，其他图片与文字继续", async () => {
+test("单图失败注入明确失败说明，其他图片与文字继续", async () => {
   const f = fixture();
   f.client.recognize = async (image) => {
     f.recognitions.push(image.attachmentId);
@@ -142,25 +154,37 @@ test("单图失败注入明确失败标记，其他图片与文字继续", async
   const good = { type: "image", attachment: attachment("sha256:good") };
   const tail = { type: "text", text: "用户文字仍在" };
   const result = await bridgeMessages([imageMessage([bad, good, tail])], f);
-  const bridged = result.messages[0];
-  assert.match(transcriptionPart(bridged, 0), /图片识别失败：视觉 API key 缺失/);
-  assert.doesNotMatch(transcriptionPart(bridged, 0), /成功图片/);
-  assert.match(transcriptionPart(bridged, 1), /成功图片/);
-  // 失败只让那一张变成失败标记；原图与用户文字都保留。
-  assert.strictEqual(bridged.content[0], bad);
-  assert.match(bridged.content[1].text, /图片识别失败：视觉 API key 缺失/);
-  assert.strictEqual(bridged.content[2], good);
-  assert.match(bridged.content[3].text, /成功图片/);
-  assert.strictEqual(bridged.content[4], tail);
-  assert.equal(bridged.content.length, 5);
+  const transcribed = transcriptionMessages(result.messages);
+  assert.match(transcribed[0].content[0].text, /图片识别失败：视觉 API key 缺失/);
+  assert.doesNotMatch(transcribed[0].content[0].text, /成功图片/);
+  assert.match(transcribed[1].content[0].text, /成功图片/);
+  // 失败只让那一张变成失败说明；原图与用户文字都保留。
+  assert.strictEqual(result.messages[0].content[0], bad);
+  assert.strictEqual(result.messages[0].content[1], good);
+  assert.strictEqual(result.messages[0].content[2], tail);
+  assert.equal(result.messages[0].content.length, 3);
   assert.deepEqual(f.recognitions, ["sha256:bad", "sha256:good"]);
 });
 
-test("已有完整标记的图片不重复识别，消息引用不变", async () => {
+test("已有旧式标记的图片不重复识别，消息引用不变", async () => {
   const f = fixture();
   const image = { type: "image", attachment: attachment("sha256:done") };
-  const marked = transcriptionBlock(image.attachment, 0, "旧结果");
+  // v0.4.x 的旧形态：转写块带 START/END 标记并进 content。
+  const marked = {
+    type: "text",
+    text: "\u200b[auto-vision-bridge:start]\n[附件：x]\n旧结果\n\u200b[auto-vision-bridge:end]",
+  };
   const messages = [imageMessage([image, marked])];
+  const result = await bridgeMessages(messages, f);
+  assert.strictEqual(result.messages, messages);
+  assert.equal(result.changed, false);
+  assert.equal(f.recognitions.length, 0);
+});
+
+test("已带 transcription 字段的旧消息不重复识别", async () => {
+  const f = fixture();
+  const image = { type: "image", attachment: attachment("sha256:done") };
+  const messages = [imageMessage([image], { transcription: "旧结果" })];
   const result = await bridgeMessages(messages, f);
   assert.strictEqual(result.messages, messages);
   assert.equal(result.changed, false);
@@ -229,10 +253,10 @@ test("模型选择 pending 优先于 lastUsed 与旧 requestHeader，切换首�
   const decision = { kind: "enter", messages: [imageMessage([{ type: "image", attachment: attachment("sha256:pending") }])] };
   const result = await f.listener({ agent: f.agent }, async () => decision);
   assert.deepEqual(f.calls, [{ provider: "new-provider", model: "new-text" }]);
-  assert.match(transcriptionOf(result.messages[0]), /识别:sha256:pending/);
+  assert.match(transcriptionOf(result.messages), /识别:sha256:pending/);
 });
 
-test("历史修复 replace 保留 sourceEventSeqs；append 失败不标完成，成功后幂等", async () => {
+test("历史修复：原消息 replace 写回，转写另起一条 append 事件", async () => {
   const f = fixture();
   const original = imageMessage([{ type: "image", attachment: attachment("sha256:history") }]);
   const event = { seq: 7, type: "user/message", data: original };
@@ -241,16 +265,13 @@ test("历史修复 replace 保留 sourceEventSeqs；append 失败不标完成，
   const session = {
     snapshotEvents: () => [event],
     append(type, data, options) {
-      assert.deepEqual(options, {
-        surfaceOp: { op: "replace", startSeq: 7, endSeq: 7 },
-        sourceEventSeqs: [7],
-      });
       appends.push({ type, data, options });
       if (failAppend) throw new Error("surface 已变化");
     },
   };
   const repaired = new Set();
   await repairLoggedImages(f.ctx, session, f, repaired);
+  // replace 抛错 → 整条修复中止（转写那条也不 append），不标完成，下次重扫。
   assert.equal(repaired.has(7), false);
   assert.equal(appends.length, 1);
   assert.deepEqual(f.recognitions, ["sha256:history"]);
@@ -258,20 +279,25 @@ test("历史修复 replace 保留 sourceEventSeqs；append 失败不标完成，
   failAppend = false;
   await repairLoggedImages(f.ctx, session, f, repaired);
   assert.equal(repaired.has(7), true);
-  assert.equal(appends.length, 2);
+  // 原消息 replace + 转写 append，各一次。
+  assert.equal(appends.length, 3);
   assert.equal(appends[1].type, "user/message");
   assert.deepEqual(appends[1].options, {
     surfaceOp: { op: "replace", startSeq: 7, endSeq: 7 },
     sourceEventSeqs: [7],
   });
   assert.strictEqual(appends[1].data.content[0], original.content[0]);
-  // 写回的内容保持干净：原图在、转写不进 content。
-  assert.equal(appends[1].data.content.length, 1);
-  assert.match(transcriptionOf(appends[1].data), /识别:sha256:history/);
+  assert.equal(appends[1].data.content.length, 1, "写回的原消息 content 保持干净");
+  // 原消息带上「已转写」标记，否则下次扫描会重复识别同一张图。
+  assert.ok(appends[1].data.transcribed > 0, "写回的原消息必须带已转写标记");
+
+  assert.equal(appends[2].type, "user/message");
+  assert.deepEqual(appends[2].options, { surfaceOp: "append" });
+  assert.equal(appends[2].data.source.kind, TRANSCRIPTION_SOURCE_KIND);
+  assert.match(appends[2].data.content[0].text, /识别:sha256:history/);
 
   await repairLoggedImages(f.ctx, session, f, repaired);
-  assert.equal(appends.length, 2);
-  assert.deepEqual(f.recognitions, ["sha256:history", "sha256:history"]);
+  assert.equal(appends.length, 3);
 });
 
 test("替换事件在二次扫描及重启后屏蔽原图，识图与 append 均只执行一次", async () => {
@@ -281,13 +307,11 @@ test("替换事件在二次扫描及重启后屏蔽原图，识图与 append 均
   const appends = [];
   const logged = [event];
   const session = {
-    snapshotEvents: () => logged,
+    // 真实宿主的 snapshotEvents() 返回快照；这里也返回拷贝，
+    // 免得测试自己制造出「遍历追着自己 append 的事件跑」的死循环。
+    snapshotEvents: () => [...logged],
     append(type, data, options) {
-      assert.deepEqual(options, {
-        surfaceOp: { op: "replace", startSeq: 7, endSeq: 7 },
-        sourceEventSeqs: [7],
-      });
-      const appended = { seq: 8, type, data, ...options };
+      const appended = { seq: logged.length + 7, type, data, ...options };
       appends.push(appended);
       logged.push(appended);
       return appended;
@@ -296,27 +320,22 @@ test("替换事件在二次扫描及重启后屏蔽原图，识图与 append 均
 
   const repaired = new Set();
   await repairLoggedImages(f.ctx, session, f, repaired);
-  assert.equal(appends.length, 1);
+  // 原消息 replace + 转写 append，各一次。
+  assert.equal(appends.length, 2);
   assert.deepEqual(f.recognitions, ["sha256:restart"]);
   assert.equal(repaired.has(7), true);
 
   await repairLoggedImages(f.ctx, session, f, repaired);
-  assert.equal(appends.length, 1);
+  assert.equal(appends.length, 2);
   assert.deepEqual(f.recognitions, ["sha256:restart"]);
 
   await repairLoggedImages(f.ctx, session, f, new Set());
-  assert.equal(appends.length, 1);
+  assert.equal(appends.length, 2);
   assert.deepEqual(f.recognitions, ["sha256:restart"]);
   assert.deepEqual(f.reads, ["sha256:restart"]);
 });
 
-test("完整标记段有精确起止边界", () => {
-  const block = transcriptionBlock(attachment("sha256:mark"), 0, "abc");
-  assert.ok(block.text.startsWith(BRIDGE_START));
-  assert.ok(block.text.endsWith(BRIDGE_END));
-});
-
-test("成功与失败转写均注入可执行的附件复核提示，且完整隐藏", () => {
+test("成功与失败转写均注入可执行的附件复核提示", () => {
   for (const block of [
     transcriptionBlock(attachment("sha256:review"), 0, "可能不完整的转写"),
     failedTranscriptionBlock(attachment("sha256:review"), 0, new Error("读取失败")),
@@ -326,9 +345,6 @@ test("成功与失败转写均注入可执行的附件复核提示，且完整�
     assert.match(block.text, /attachmentId=sha256:review/);
     assert.match(block.text, /针对性 question/);
     assert.match(block.text, /不要仅凭转写猜测/);
-    assert.ok(block.text.indexOf("复核提示") > block.text.indexOf(BRIDGE_START));
-    assert.ok(block.text.indexOf("复核提示") < block.text.lastIndexOf(BRIDGE_END));
-    assert.equal(stripBridgedText(`前文${block.text}后文`), "前文后文");
   }
 });
 
@@ -339,49 +355,39 @@ test("没有实际 attachmentId 时不注入无法执行的复核提示", () => 
       failedTranscriptionBlock(ref, 0, "失败"),
     ]) {
       assert.doesNotMatch(block.text, /复核提示|重看原图|调用 inspect_image/);
-      assert.equal(stripBridgedText(block.text), "");
     }
   }
 });
 
-
-test("转写过长时：转写块只留摘要，全文写进文件并带上路径", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "avb-bridge-"));
-  try {
-    const longText = "细节".repeat(400);
-    const f = fixture({
-      client: {
-        async recognize() { return longText; },
-      },
-      getConfig: () => ({ ...testConfig(), dumpThreshold: 100, summaryLength: 50, dumpDir: dir }),
-    });
-    const image = { type: "image", attachment: attachment("sha256:long", "long.png") };
-    const result = await bridgeMessages([imageMessage([image])], f);
-    const transcript = transcriptionOf(result.messages[0]);
-    assert.ok(transcript.length > 0, "应有转写");
-    assert.ok(transcript.length < longText.length + 200, "转写不应塞进全文");
-    assert.match(transcript, /转写全文过长，共 \d+ 字符，已存文件：/);
-    const file = transcript.match(/已存文件：(.+?)；/)?.[1];
-    assert.ok(file, "应能解析出文件路径");
-    assert.ok(file.startsWith(dir));
-    assert.equal(await readFile(file, "utf8"), longText);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+test("转写全文进上下文：不截断、不落盘", async () => {
+  const full = "细节".repeat(400);
+  const f = fixture({
+    client: {
+      async recognize() { return full; },
+    },
+  });
+  const image = { type: "image", attachment: attachment("sha256:long", "long.png") };
+  const result = await bridgeMessages([imageMessage([image])], f);
+  const transcript = transcriptionOf(result.messages);
+  // 全文都在，且不再有「已存文件」那套截断提示。
+  assert.ok(transcript.includes(full), "转写全文应原样进上下文");
+  assert.doesNotMatch(transcript, /已存文件/);
+  assert.doesNotMatch(transcript, /中间已省略/);
 });
 
-test("转写较短时：全文直接进转写，不落盘", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "avb-bridge-"));
-  try {
-    const f = fixture({
-      getConfig: () => ({ ...testConfig(), dumpThreshold: 500, dumpDir: dir }),
-    });
-    const image = { type: "image", attachment: attachment("sha256:short", "short.png") };
-    const result = await bridgeMessages([imageMessage([image])], f);
-    const transcript = transcriptionOf(result.messages[0]);
-    assert.match(transcript, /识别:sha256:short/);
-    assert.doesNotMatch(transcript, /已存文件/);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+test("notice 摘要取转写第一行，且按官方上限 120 截断", () => {
+  assert.equal(noticeSummaryOf("第一行\n第二行"), "第一行");
+  assert.equal(noticeSummaryOf("\n[附件：a.png]\n正文"), "正文");
+  // 标记行与附件行不作为摘要。
+  assert.equal(
+    noticeSummaryOf("\u200b[auto-vision-bridge:start]\n[附件：a.png]\n真正的摘要"),
+    "真正的摘要",
+  );
+  // 空文本退回固定文案（notice 的 summary 必须非空）。
+  assert.equal(noticeSummaryOf(""), "图片已转写为文字");
+  // 超长按 120 截断。
+  const long = "长".repeat(300);
+  const summary = noticeSummaryOf(long);
+  assert.equal(summary.length, 121, "120 字符 + 省略号");
+  assert.ok(summary.endsWith("…"));
 });

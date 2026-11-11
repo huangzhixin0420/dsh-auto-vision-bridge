@@ -2,12 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Config, resolveConfig } from "../index.js";
 import { DEFAULT_PROMPT } from "../lib/vision-client.js";
-import {
-  DEFAULT_DUMP_THRESHOLD,
-  DEFAULT_SUMMARY_LENGTH,
-  dumpThresholdOf,
-  summaryLengthOf,
-} from "../lib/transcript-store.js";
 
 /**
  * 默认值这一层最容易静默失效：改了 schema 里的 .default()，看着像改了，
@@ -29,11 +23,6 @@ test("resolveConfig({}) 给出完整的运行期默认值", () => {
   assert.equal(config.retries, 1);
   assert.equal(config.retryDelayMs, 500);
   assert.equal(config.maxConcurrent, 6);
-  // 一张手机截图转写实测 2000–3000 字符；阈值 500 会把每张图都截成摘要。
-  assert.equal(config.dumpThreshold, DEFAULT_DUMP_THRESHOLD);
-  assert.equal(config.summaryLength, DEFAULT_SUMMARY_LENGTH);
-  assert.ok(DEFAULT_DUMP_THRESHOLD >= 4000, "阈值必须容得下一张普通截图的全量转写");
-  assert.ok(DEFAULT_SUMMARY_LENGTH >= 2000);
   assert.equal(config.failureThreshold, 3);
   assert.equal(config.cooldownMs, 60000);
   assert.equal(config.enabled, true);
@@ -42,17 +31,22 @@ test("resolveConfig({}) 给出完整的运行期默认值", () => {
   assert.equal(config.providerBridge, undefined, "桥接默认关闭");
 });
 
+test("截断配置已废弃：转写全文进上下文，不再落盘", () => {
+  // 2026-11-10 起转写全文进会话事件，不再截断、不再落盘，
+  // dumpThreshold / summaryLength 两个配置项随之删除。
+  const config = resolveConfig({});
+  assert.equal(config.dumpThreshold, undefined, "截断阈值配置已删除");
+  assert.equal(config.summaryLength, undefined, "摘要长度配置已删除");
+});
+
 test("显式配置优先，未配的字段才补默认", () => {
   const config = resolveConfig({
     timeoutMs: 300000,
-    dumpThreshold: 5000,
     retries: 0,
     pool: [{ provider: "c2a", model: "vision", priority: 1, maxConcurrent: 6 }],
   });
   assert.equal(config.timeoutMs, 300000);
-  assert.equal(config.dumpThreshold, 5000);
   assert.equal(config.retries, 0, "显式 0 不能被默认值顶掉");
-  assert.equal(config.summaryLength, DEFAULT_SUMMARY_LENGTH, "未配的字段仍补默认");
   assert.equal(config.pool.length, 1);
   assert.equal(config.pool[0].maxConcurrent, 6);
   assert.equal(config.pool[0].priority, 1);
@@ -62,14 +56,6 @@ test("池条目的子字段也有默认值", () => {
   const config = resolveConfig({ pool: [{ provider: "c2a", model: "vision" }] });
   assert.equal(config.pool[0].maxConcurrent, 1);
   assert.equal(config.pool[0].priority, 1);
-});
-
-test("落盘阈值与摘要有兜底，非法值不污染运行时", () => {
-  assert.equal(dumpThresholdOf({}), DEFAULT_DUMP_THRESHOLD);
-  assert.equal(dumpThresholdOf({ dumpThreshold: -1 }), DEFAULT_DUMP_THRESHOLD);
-  assert.equal(dumpThresholdOf({ dumpThreshold: "abc" }), DEFAULT_DUMP_THRESHOLD);
-  assert.equal(summaryLengthOf({}), DEFAULT_SUMMARY_LENGTH);
-  assert.equal(summaryLengthOf({ summaryLength: 0 }), DEFAULT_SUMMARY_LENGTH);
 });
 
 test("默认提示词要求结构化转写、禁止复述任务、末尾给摘要", () => {

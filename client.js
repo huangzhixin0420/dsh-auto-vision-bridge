@@ -28,54 +28,110 @@
   }
 
   /**
-   * 跨节点清理转写标记。
+   * 跨节点清理转写标记（文档序两遍法）。
    *
-   * DSH 0.2.2 起把一段用户文本切成多个 <span class="_plainRun">（markdown
-   * 行内渲染与 dsh-message-quotes 都会切），START 与 END 于是落在不同的
-   * text node 里，单节点替换删不掉。这里按「同一父元素下的兄弟节点」
-   * 聚合处理：找到含 START 的节点后，向后找到含 END 的节点，把两者之间
-   * （含）的所有兄弟 text node 一起清掉。
+   * 2026-11-10 实测定位的缺陷：旧算法假设 START 与 END 在**同一父元素下的
+   * 兄弟 text node**里。DSH 0.2.2 起会把一段文本切成多个节点，节点之间可能夹
+   * chip 元素（skill / 文件引用 / 密钥遮罩），于是 START 与 END 落进**不同父
+   * 元素** —— 旧算法找不到 END 就静默放弃，转写正文整段泄漏到用户气泡。
+   * Chrome 实测：同父元素能清干净，跨父元素清理模式为 none、0 节点清除。
    *
-   * 返回被清空的节点列表，供调用方隐藏空容器。
+   * 现在按**文档序**处理，两遍：
+   *   第一遍：从 START 节点起按文档序找第一个含 END 的 text node；
+   *          找不到就什么都不删（宁可留着，也不要猜着删用户文字）。
+   *   第二遍：从 START 节点清到 END 节点为止，中途的 text node 内容全清
+   *          （都是转写正文），END 之后的内容原样保留，START 之前的保留。
+   *
+   * 现在新消息不再带标记（转写独占一条事件、渲染成上下文卡片），这个函数
+   * 只服务于**旧会话**里已经落盘的历史消息。
    */
   function stripBridgedRange(startNode) {
-    var parent = startNode.parentElement;
-    if (!parent) return [];
-    var children = Array.prototype.slice.call(parent.childNodes);
-    var startIndex = children.indexOf(startNode);
-    if (startIndex === -1) return [];
-    var endIndex = -1;
-    for (var i = startIndex; i < children.length; i++) {
-      var node = children[i];
-      if (node.nodeType !== 3) continue;
-      if ((node.data || "").indexOf(END) === -1) continue;
-      endIndex = i;
-      break;
-    }
-    if (endIndex === -1) return [];
-    var cleared = [];
-    for (var j = startIndex; j <= endIndex; j++) {
-      var target = children[j];
-      if (target.nodeType !== 3) continue;
-      var data = target.data || "";
-      var endAt = data.indexOf(END);
-      // 结束标记所在节点：保留标记之后的内容；标记之前的内容属于转写段，
-      // 但同一节点里 START 之前的内容是用户文字，要留下。
-      if (endAt !== -1) {
-        var kept = data.slice(endAt + END.length);
-        // START 之前的部分若是用户文字（同节点场景），保留。
-        var startAt = data.indexOf(START);
-        if (startAt > 0) kept = data.slice(0, startAt) + kept;
-        if (data === kept) continue;
-        target.data = kept;
-        cleared.push(target);
-        continue;
+    if (!startNode || !startNode.parentElement) return [];
+
+    // 文档序推进：元素先下潜到它的第一个子节点，再走兄弟，最后退回父级。
+    // 边界用 parentElement 为空（真实 DOM 里 html 的 parentElement 是 null），
+    // 不用 document.body —— 后者在跨上下文测试里是另一个对象引用。
+    function nextInOrder(node) {
+      if (node.nodeType !== 3 && node.childNodes && node.childNodes.length > 0) {
+        return node.childNodes[0];
       }
-      if (data === "") continue;
-      target.data = "";
-      cleared.push(target);
+      if (node.nextSibling) return node.nextSibling;
+      var parent = node.parentElement;
+      while (parent && !parent.nextSibling) {
+        parent = parent.parentElement;
+      }
+      return parent ? parent.nextSibling : null;
+    }
+
+    // 第一遍：找 END 所在节点。
+    var endNode = null;
+    var probe = startNode;
+    var guard = 0;
+    while (probe && guard++ < 20000) {
+      if (probe.nodeType === 3 && (probe.data || "").indexOf(END) !== -1) {
+        endNode = probe;
+        break;
+      }
+      probe = nextInOrder(probe);
+    }
+    // 找不到 END：不动任何内容。
+    if (endNode === null) return [];
+
+    // 第二遍：从 START 节点清到 END 节点。
+    var cleared = [];
+    var node = startNode;
+    guard = 0;
+    while (node && guard++ < 20000) {
+      if (node === endNode) {
+        if (node.nodeType === 3) {
+          var data = node.data || "";
+          var endAt = data.indexOf(END);
+          var kept = data.slice(endAt + END.length);
+          // 同一节点里 START 之前的内容是用户文字，要留下。
+          var startAt = data.indexOf(START);
+          if (startAt > 0) kept = data.slice(0, startAt) + kept;
+          if (data !== kept) {
+            node.data = kept;
+            cleared.push(node);
+          }
+        }
+        return cleared;
+      }
+      if (node.nodeType === 3) {
+        var body = node.data || "";
+        if (body !== "") {
+          // START 之前的内容是用户文字，要保留；之后的是转写正文，清掉。
+          var startIndex = body.indexOf(START);
+          if (startIndex > 0) {
+            node.data = body.slice(0, startIndex);
+          } else if (startIndex === -1 && partialStartPrefix(body) !== "") {
+            // 本节点末尾是 START 的前半截：标记从这里跨到下一个节点。
+            // 保留本节点里标记之前的用户文字，标记碎片随节点一起清掉。
+            var cut = body.length - partialStartPrefix(body).length;
+            node.data = body.slice(0, cut);
+          } else {
+            node.data = "";
+          }
+          cleared.push(node);
+        }
+      }
+      node = nextInOrder(node);
     }
     return cleared;
+  }
+
+  /**
+   * 判断一段文本是否是 START 的前缀（标记被切开时的碎片）。
+   *
+   * DSH 按 markdown 结构切分文本，切点未必落在标记之外，START 标记自身
+   * 也可能被切成两半。本节点末尾若是 START 的前缀，说明标记从这里开始
+   * 跨到了下一个节点。
+   */
+  function partialStartPrefix(text) {
+    for (var size = START.length - 1; size > 0; size -= 1) {
+      if (text.endsWith(START.slice(0, size))) return START.slice(0, size);
+    }
+    return "";
   }
 
   window.__ModuleLoader__.load({
@@ -240,9 +296,7 @@
           primitives.settingsNumberField("retryDelayMs"),
           primitives.settingsNumberField("maxConcurrent"),
           primitives.settingsNumberField("failureThreshold"),
-          primitives.settingsNumberField("cooldownMs"),
-          primitives.settingsNumberField("dumpThreshold"),
-          primitives.settingsNumberField("summaryLength")
+          primitives.settingsNumberField("cooldownMs")
         ], []);
         this.actions = this.form.actions();
         this.store = this.form.bind(function () { return this.projection(); }.bind(this));
@@ -450,8 +504,6 @@
           maxConcurrent: this.form.field("maxConcurrent"),
           failureThreshold: this.form.field("failureThreshold"),
           cooldownMs: this.form.field("cooldownMs"),
-          dumpThreshold: this.form.field("dumpThreshold"),
-          summaryLength: this.form.field("summaryLength"),
           // 快照会被 store 深冻结；草稿数组本体交给它就再也写不进去。
           // 这里只交出拷贝，冻结的永远不是草稿自己。
           entries: (this.draft === undefined ? this.currentEntries() : this.beginDraft())
@@ -779,8 +831,6 @@
           valueField("maxConcurrent", props, state, "多图并发上限", "同一条消息里同时识别的图片数量上限。", true),
           valueField("failureThreshold", props, state, "模型熔断阈值（次）", "同一模型连续失败多少次后临时停止派发；0 表示不熔断。", true),
           valueField("cooldownMs", props, state, "熔断冷却时长（毫秒）", "熔断后暂停派发该模型的时长；结束后只放一个探测请求，成功即恢复。", true),
-          valueField("dumpThreshold", props, state, "转写落盘阈值（字符）", "转写超过这个长度就只留摘要进上下文，全文写进临时目录并返回路径；0 表示不截断。", true),
-          valueField("summaryLength", props, state, "截断后摘要长度（字符）", "转写被截断时，进上下文保留多少字符。", true),
           valueField("historyRetentionDays", props, state, "识图历史保留天数", "识图历史（每张图片一条记录）的保留时长；0 表示不自动清理。", true),
           jsx(PoolEditor, {
             useAutoVision: props.useAutoVision,

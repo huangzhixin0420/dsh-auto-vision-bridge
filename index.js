@@ -4,7 +4,6 @@ import { DEFAULT_RETENTION_DAYS } from "./lib/history.js";
 import { INSPECT_IMAGE_DESCRIPTION } from "./lib/inspect-image.js";
 import { applyRuntime, runtimeDiagnostics } from "./lib/runtime.js";
 import { DEFAULT_PROMPT } from "./lib/vision-client.js";
-import { DEFAULT_DUMP_THRESHOLD, DEFAULT_SUMMARY_LENGTH } from "./lib/transcript-store.js";
 
 export const name = "auto-vision-bridge";
 export const inject = ["tools", "llm", "attachments", "sessionProjections"];
@@ -50,16 +49,6 @@ const ConfigBase = z.object({
   failureThreshold: z.number().default(3),
   /** 熔断后的冷却时长（毫秒）；冷却结束前不再派发给该模型。 */
   cooldownMs: z.number().default(60000),
-  /**
-   * 转写超过多少字符才落盘并截断；0 表示不截断，全部进上下文。
-   *
-   * 一张手机截图的转写实测在 2000–3000 字符。原来 500 的阈值会把几乎每一张
-   * 截图都截成 400 字摘要，模型只剩开头结尾、中段细节全丢，只能再调一次
-   * inspect_image 重看原图。给到 4000 让绝大多数单图转写全文进上下文。
-   */
-  dumpThreshold: z.number().default(DEFAULT_DUMP_THRESHOLD),
-  /** 落盘后留在上下文里的摘要长度（字符）。摘要保留头尾，末尾通常是结论。 */
-  summaryLength: z.number().default(DEFAULT_SUMMARY_LENGTH),
   /** 识图历史保留天数；0 表示不自动清理。 */
   historyRetentionDays: z.number().default(DEFAULT_RETENTION_DAYS),
   /** 视觉模型池；条目来自 DSH 模型目录，可自由增减。 */

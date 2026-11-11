@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
-import { BRIDGE_END, BRIDGE_START, stripBridgedText, transcriptionBlock } from "../lib/markers.js";
+import { BRIDGE_END, BRIDGE_START } from "../lib/markers.js";
 import { attachment } from "./helpers.js";
 
 /** 宿主快照 store 的深冻结行为：只有新对象能写，被冻结对象写入无效。 */
@@ -151,22 +151,28 @@ async function loadClient(extra = {}) {
   return { exports, models };
 }
 
+// 旧会话里已经落盘的转写块（带 START/END 标记）。
+// 2026-11-10 起新消息不再带标记（转写独占一条事件、渲染成上下文卡片），
+// 但历史消息仍在会话 log 里，浏览器端清理脚本仍要伺候它们。
+function legacyMarked(body) {
+  return `${BRIDGE_START}\n[附件：x.png]\n${body}\n${BRIDGE_END}`;
+}
+
 test("client 仅删除所有完整标记段，不多删前后用户文字", async () => {
   const { exports } = await loadClient();
   const clean = exports.__test.stripBridgedText;
   assert.equal(exports.__test.START, BRIDGE_START);
   assert.equal(exports.__test.END, BRIDGE_END);
-  const one = transcriptionBlock(attachment("sha256:1"), 0, "第一张").text;
-  const two = transcriptionBlock(attachment("sha256:2"), 1, "第二张").text;
+  const one = legacyMarked("第一张");
+  const two = legacyMarked("第二张");
   assert.equal(clean(`用户前文${one}用户中段${two}用户后文`), "用户前文用户中段用户后文");
   assert.equal(clean("普通 [auto-vision-bridge:start] 文本"), "普通 [auto-vision-bridge:start] 文本");
   const incomplete = `用户文字${BRIDGE_START}\n没有结束标记`;
   assert.equal(clean(incomplete), incomplete);
-  assert.equal(stripBridgedText(`A${one}B${two}C`), "ABC");
 });
 
 test("client 初次扫描覆盖刷新，MutationObserver 覆盖新增多文本块，且不创建图片预览", async () => {
-  const marked = transcriptionBlock(attachment("sha256:dom"), 0, "隐藏").text;
+  const marked = legacyMarked("隐藏");
   const nodes = [{ data: `前文${marked}后文` }];
   let observer;
   class FakeMutationObserver {
@@ -322,7 +328,7 @@ function buildBubbleDocument(specs) {
 }
 
 test("仅图片消息的空气泡被隐藏，图片与用户文字气泡不受影响", async () => {
-  const marked = transcriptionBlock(attachment("sha256:bubble"), 0, "隐藏").text;
+  const marked = legacyMarked("隐藏");
   const document = buildBubbleDocument([
     { name: "empty-bubble", text: marked, hasAttachments: true },
     { name: "text-bubble", text: `用户文字${marked}`, hasAttachments: true },
@@ -367,11 +373,11 @@ test("顶层设置复用 auto-vision-bridge 配置，只保留模型池与并发
   const model = models[0];
   assert.equal(model.scope, ctx.configForms.get("auto-vision-bridge"));
   const covered = [...model.fields.map((item) => item.field), ...model.secrets.map((item) => item.field), "enabled"];
-  // 不再有端点、凭据与独立的视觉模型字段。
+  // 不再有端点、凭据与独立的视觉模型字段；
+  // 截断配置也已删除（2026-11-10 起转写全文进会话事件，不再截断落盘）。
   assert.deepEqual(covered.sort(), [
-    "cooldownMs", "dumpThreshold", "enabled", "failureThreshold", "maxConcurrent",
-    "maxImageBytes", "prompt", "retries", "retryDelayMs",
-    "summaryLength", "timeoutMs",
+    "cooldownMs", "enabled", "failureThreshold", "maxConcurrent",
+    "maxImageBytes", "prompt", "retries", "retryDelayMs", "timeoutMs",
   ]);
 
   const face = registrations[0].inject();
@@ -397,8 +403,9 @@ test("顶层设置复用 auto-vision-bridge 配置，只保留模型池与并发
   assert.equal(nodes.find((node) => node.type === "h3")?.props.children, "自动视觉桥接");
   // 不再有独立的密钥控件与端点/视觉模型输入框。
   assert.equal(nodes.some((node) => node.type?.name === "SettingsSecretField"), false);
-  // 10 个标量输入框（含识图历史保留天数）；提示词是独立的 textarea。
-  assert.equal(nodes.filter((node) => node.type?.name === "SettingsValueField").length, 10);
+  // 8 个标量输入框（含识图历史保留天数）；提示词是独立的 textarea。
+  // 截断阈值与摘要长度两个字段已删除（2026-11-10 起转写全文进会话事件）。
+  assert.equal(nodes.filter((node) => node.type?.name === "SettingsValueField").length, 8);
   assert.equal(nodes.some((node) => node.props?.["data-auto-vision-prompt"] === true), true);
 
   ctx.disposers[0]();

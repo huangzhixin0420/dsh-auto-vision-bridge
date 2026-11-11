@@ -273,77 +273,25 @@ test("attachmentId 查找在事件里无图片时返回 undefined", async () => 
   assert.equal(found, undefined);
 });
 
-test("工具侧：转写过长时结果项带 file 字段，正文只留摘要", async () => {
-  const dumpDir = await mkdtemp(join(tmpdir(), "avb-tool-"));
-  try {
-    const longText = "识别细节".repeat(300);
-    const h = harness({ "c2a/vision": longText });
-    const config = { ...h.config, dumpThreshold: 100, summaryLength: 60, dumpDir };
-    const tool = createInspectImageTool(identityDefineTool, {
-      ctx: h.ctx,
-      client: h.client,
-      getConfig: () => config,
-    });
-    const result = await tool.execute({ path: join(tempDir, "a.png") }, {
-      agent: { session: { header: { cwd: tempDir } } },
-    });
-    assert.equal(result.length, 1);
-    assert.equal(result[0].ok, true);
-    assert.ok(result[0].file, "结果项应带 file 字段");
-    assert.ok(result[0].file.startsWith(dumpDir));
-    assert.ok(result[0].text.length < longText.length, "正文应是摘要而非全文");
-    assert.match(result[0].text, /已存文件：/);
-    // 文件里是全文。
-    assert.equal(await readFile(result[0].file, "utf8"), longText);
-  } finally {
-    await rm(dumpDir, { recursive: true, force: true });
-  }
+test("工具侧：转写全文直返，不截断不落盘", async () => {
+  const longText = "识别细节".repeat(300);
+  const h = harness({ "c2a/vision": longText });
+  const tool = createInspectImageTool(identityDefineTool, {
+    ctx: h.ctx,
+    client: h.client,
+    getConfig: () => h.config,
+  });
+  const result = await tool.execute({ path: join(tempDir, "a.png") }, {
+    agent: { session: { header: { cwd: tempDir } } },
+  });
+  assert.equal(result.length, 1);
+  assert.equal(result[0].ok, true);
+  // 2026-11-10 起不再截断、不再落盘：全文进结果，且没有 file 字段。
+  assert.equal(result[0].text, longText, "工具结果应是全文");
+  assert.equal(result[0].file, undefined, "不再有 file 字段");
 });
 
-test("工具侧：转写较短时结果项不带 file 字段", async () => {
-  const dumpDir = await mkdtemp(join(tmpdir(), "avb-tool-"));
-  try {
-    const h = harness({ "c2a/vision": "短结果" });
-    const config = { ...h.config, dumpThreshold: 500, dumpDir };
-    const tool = createInspectImageTool(identityDefineTool, {
-      ctx: h.ctx,
-      client: h.client,
-      getConfig: () => config,
-    });
-    const result = await tool.execute({ path: join(tempDir, "a.png") }, {
-      agent: { session: { header: { cwd: tempDir } } },
-    });
-    assert.equal(result[0].ok, true);
-    assert.equal(result[0].file, undefined, "短转写不应带 file 字段");
-    assert.equal(result[0].text, "短结果");
-  } finally {
-    await rm(dumpDir, { recursive: true, force: true });
-  }
-});
-
-test("工具侧：落盘文件名只取 basename，不带整条目录路径", async () => {
-  const dumpDir = await mkdtemp(join(tmpdir(), "avb-tool-"));
-  try {
-    const longText = "识别细节".repeat(300);
-    const h = harness({ "c2a/vision": longText });
-    const config = { ...h.config, dumpThreshold: 100, summaryLength: 60, dumpDir };
-    const tool = createInspectImageTool(identityDefineTool, {
-      ctx: h.ctx,
-      client: h.client,
-      getConfig: () => config,
-    });
-    const result = await tool.execute({ path: join(tempDir, "a.png") }, {
-      agent: { session: { header: { cwd: tempDir } } },
-    });
-    const name = result[0].file.split("/").pop();
-    assert.match(name, /^a\.png-[0-9a-f]{16}\.md$/, "文件名应为 basename + 哈希，不含目录");
-    assert.doesNotMatch(name, /tmp|Users|Development/);
-  } finally {
-    await rm(dumpDir, { recursive: true, force: true });
-  }
-});
-
-test("工具侧：渲染文本在有全文路径时明确指出", async () => {
+test("工具侧：渲染文本不再提全文路径", async () => {
   const h = harness();
   const tool = createInspectImageTool(identityDefineTool, {
     ctx: h.ctx,
@@ -351,8 +299,9 @@ test("工具侧：渲染文本在有全文路径时明确指出", async () => {
     getConfig: () => h.config,
   });
   const rendered = tool.output.render({ path: "x" }, [
-    { index: 0, source: "path", id: "/a.png", ok: true, text: "摘要", file: "/tmp/x/a.md" },
+    { index: 0, source: "path", id: "/a.png", ok: true, text: "全文" },
   ]);
   const text = rendered.map((part) => part.text).join("\n");
-  assert.match(text, /全文已存文件：\/tmp\/x\/a\.md/);
+  assert.match(text, /全文/);
+  assert.doesNotMatch(text, /全文已存文件/);
 });

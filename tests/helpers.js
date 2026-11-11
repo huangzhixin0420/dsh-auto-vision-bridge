@@ -10,8 +10,6 @@ export function testConfig(overrides = {}) {
     maxConcurrent: 4,
     failureThreshold: 3,
     cooldownMs: 60000,
-    dumpThreshold: 500,
-    summaryLength: 400,
     pool: [],
     ...overrides,
   };
@@ -31,28 +29,42 @@ export function imageMessage(blocks, extra = {}) {
 }
 
 /**
- * 取一条消息的转写文本。
+ * 取一条消息（或一组消息）里的转写文本。
  *
- * v0.3.0 起转写曾挂在 transcription 字段、靠 llm/stream 注入，而注入通道不生效；
- * 现在恢复成把转写块并进 content（模型侧唯一可靠通道）。两种形态都认，便于同时
- * 覆盖「模型侧带转写块」与「写回会话时只挂 transcription 字段」两类断言。
+ * 2026-11-10 起转写不再并进原消息的 content，而是**独立成一条 user/message
+ * 事件**（source.kind = "auto-vision-bridge"）。所以提取器要能从「一组消息」
+ * 里找出转写消息并拼起来。
+ *
+ * 旧形态（v0.4.x 的 content 内标记块、v0.3.0 的 transcription 字段）也一并认，
+ * 便于历史事件的用例继续跑。
  */
-export function transcriptionOf(message) {
-  const value = message?.transcription;
-  if (typeof value === "string" && value) return value;
-  const blocks = Array.isArray(message?.content) ? message.content : [];
-  return blocks
-    .filter((block) => block?.type === "text" && typeof block.text === "string"
-      && block.text.includes(BRIDGE_START) && block.text.includes(BRIDGE_END))
-    .map((block) => block.text)
-    .join("\n\n");
+export function transcriptionOf(input) {
+  if (typeof input === "string") return input;
+  const messages = Array.isArray(input) ? input : [input];
+  const parts = [];
+  for (const message of messages) {
+    if (!message || typeof message !== "object") continue;
+    const legacy = message.transcription;
+    if (typeof legacy === "string" && legacy) {
+      parts.push(legacy);
+      continue;
+    }
+    const blocks = Array.isArray(message.content) ? message.content : [];
+    for (const block of blocks) {
+      if (block?.type !== "text" || typeof block.text !== "string") continue;
+      const isLegacy = block.text.includes(BRIDGE_START) && block.text.includes(BRIDGE_END);
+      const isTranscription = message.source?.kind === "auto-vision-bridge";
+      if (isLegacy || isTranscription) parts.push(block.text);
+    }
+  }
+  return parts.join("\n\n");
 }
 
 /**
  * 取消息里第 index 段转写（多图时每张图一段）。
  */
-export function transcriptionPart(message, index = 0) {
-  return transcriptionOf(message).split("\n\n")[index] ?? "";
+export function transcriptionPart(input, index = 0) {
+  return transcriptionOf(input).split("\n\n")[index] ?? "";
 }
 
 export function jsonResponse(value, init = {}) {

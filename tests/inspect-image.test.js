@@ -182,7 +182,7 @@ test("inspect_image 按 attachmentId 经宿主服务读原图，并与自动桥�
   const bridged = await bridgeMessages([{ role: "user", content: [imageBlock] }], {
     ctx, client, getConfig,
   });
-  assert.match(transcriptionOf(bridged.messages[0]), /首次转写/);
+  assert.match(transcriptionOf(bridged.messages), /首次转写/);
 
   const tool = createInspectImageTool(identityDefineTool, { ctx, client, getConfig });
   const result = await tool.execute({ attachmentId: `  ${ref.attachmentId}  ` }, {

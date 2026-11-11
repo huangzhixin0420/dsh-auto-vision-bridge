@@ -1,18 +1,18 @@
 # dsh-auto-vision-bridge
 
-标准 DSH Web 插件：当前模型明确声明为纯文本时，自动把用户图片逐张识别为文本；原始 `image` block 保持不变，转写以精确隐藏标记紧随原图持久化。Web 客户端只删除这些标记段，图片仍由 DSH GUI 原生渲染和点击查看。
+标准 DSH Web 插件：当前模型明确声明为纯文本时，自动把用户图片逐张识别为文本；原始 `image` block 保持不变，转写独立成一条会话事件，**只有模型看得到，界面上完全不出现**。
 
 ## 功能
 
 - 根级 `agent/pre-step` 自动桥接，不要求主 Agent 再调用工具。
 - 当前路由按 `modelSelection.pending → lastUsed → requestHeader → agent.options` 读取，避免模型切换首步使用旧路由。
-- 原生视觉路由的新消息原样直发；纯文本消息保持同引用；两种情况的额外识图请求均为零。
+- 原生视觉路由的新消息原样直发，视觉 API 与历史修复均为零调用；纯文本路由下每张图只识别一次，不额外发请求。
 - **纯模型池驱动**：识图不单独配置端点与密钥，直接从 DSH 本身的模型目录中选择；支持自由增减条目。
 - **多图并发派发**：多张图片按原顺序落位；池内条目按实时占用轮转派发，每个模型可单独设置并发上限。
-- **失败自动重试**：单次识别失败后按配置重试，达到最大次数后才落失败标记；重试时重新从池中派发。
+- **失败自动重试**：单次识别失败后按配置重试，达到最大次数后才落失败说明；重试时重新从池中派发。
 - **池内优先级分层**：每个池条目可单独设优先级（整数，越小越优先）；同一优先级内按实时占用轮转，优先层无可用条目时才下沉。
 - **模型级熔断**：同一模型连续失败达到阈值后单独熔断，冷却期内不再派发给它；可区分「可恢复」（限流/配额/网络/5xx）与「不可恢复」（模型不存在/鉴权失败/模态不支持）两类错误，后者立即熔断。
-- **长转写落盘截断**：转写超过阈值时只把摘要放进上下文，全文写进临时目录并返回路径，避免长描述挤占主模型上下文。
+- **转写全文进会话事件，只对模型可见**：转写独立成一条 `user/message` 事件（`source.kind = "auto-vision-bridge"`），模型侧照常读到它；原消息的 `content` 保持干净，只有原图与用户自己的文字。宿主对这类消息不渲染任何可见行（见下文「界面上看不到转写」），所以转写正文不可能出现在用户气泡里。
 - 文本路由下懒修复历史 `user/message`，使用 `surfaceOp: replace` 和 `sourceEventSeqs`；写回失败会重试，已有标记不会重复识别。
 - 只包装 `llm.resolveModelInfo` 补上传准入，不碰 registration、adapter 或 `prepareCall`；支持 HMR 幂等和 dispose 恢复。
 - 仅注册一个 `inspect_image` 工具：`path` 支持本地绝对路径、会话 cwd 相对路径和 http(s) URL；`attachmentId` 支持针对用户附件重看原图。
@@ -21,14 +21,96 @@
   - `ok` 为 true 时 `text` 是识别文本，为 false 时 `error` 是失败说明；
   - **单张失败不影响其余**：文件缺失、超限、附件未登记、识别失败都只让该条失败，其余照常返回；只有 `path` 与 `attachmentId` 都为空才算调用方式错误，直接报错。
 - 自动转写可能不完整或有误。转写在有附件 ID 时会提示模型：核对细节、回答追问或转写不明确时，携带针对性 `question` 调用 `inspect_image` 复核，不仅凭转写猜测。
-- **识图历史**（侧栏「识图历史」）：每张图片一条记录，记实际派发的 provider/model、耗时、缓存命中与成败；顶部五块合计（次数/成功率/失败/平均耗时/缓存命中）+ 模型分布，明细表 20 行。落盘走 `ctx.storageDomain`（`~/.dsh/storages/auto_vision_bridge/events/`），保留天数由 `historyRetentionDays` 控制（0 = 不清理）。会话列优先显示会话标题，会话已结束（不在 live store）时退回短 sessionId。
+- **识图历史**（侧栏「识图历史」）：每张图片一条记录，记实际派发的 provider/model、耗时、缓存命中与成败；顶部五块合计（次数/成功率/失败/平均耗时/缓存命中）+ 模型分布，明细表 20 行。落盘走插件自管的文件目录（`~/.dsh/auto-vision-bridge/history/`），原子写、不产生任何宿主事件；`storages` 下的旧目录只读兼容。保留天数由 `historyRetentionDays` 控制（0 = 不清理）。会话列优先显示会话标题，会话已结束（不在 live store）时退回短 sessionId。
 - **附件 ID 只认完整 64 位**（v0.4.0 起）：`attachmentId` 必须是 `sha256:` + 64 位十六进制，逐字复制自附件标记。抄短、缩写、凭记忆重写一律拒绝，报错里会写清你给了几位、并把当前会话所有图片的完整 ID 列出来，照抄重试即可。容忍大小写差异、缺失 `sha256:` 前缀与首尾空白——但绝不做前缀猜测。
 
   > 为什么去掉前缀补全：它无法区分「抄的是这张图的正确前缀」和「抄错了、而这个错误前缀恰好唯一命中另一张图」。后者会静默返回无关图片的识别结果，模型和用户都发现不了。实测全局附件库 400 个对象、203 个桶、最大桶 5 个文件，4 位前缀在桶内误中概率约 2%。抄错是可恢复的（重抄一次），拿错内容不可恢复。
 - 自动桥接与工具共用 `VisionClient`：图片 SHA-256、attachmentId、prompt/question 与池指纹共同构成缓存 key；200 项 LRU，in-flight 去重，失败不缓存。
-- **转写只对模型可见**：发请求前，转写以 text 块并入**模型侧** messages，紧跟对应图片之后 —— 模型这一轮就能读到文字，不必再调 `inspect_image`。合并只发生在内存里的请求副本上，会话存储的 `content` 保持原样，所以 Web GUI 的用户气泡、会话标题里看不到转写正文或任何标记。
+- **转写只对模型可见**：转写独立成一条会话事件，事件即输入 —— 模型这一轮就能读到文字，不必再调 `inspect_image`。原消息的 `content` 保持原样，所以 Web GUI 的用户气泡、会话标题里看不到转写正文或任何标记。
 
-  > v0.3.0 曾把转写挂在消息的 `transcription` 字段、由 `llm/stream` 钩子注入，但 cordis 的 waterfall 里 `next` 是 `const next = () => {...}`，参数被静默丢弃 —— 注入从未送达模型。0.4.1 恢复成并进 content。
+  > v0.3.0 曾把转写挂在消息的 `transcription` 字段、由 `llm/stream` 钩子注入，但 cordis 的 waterfall 里 `next` 是 `const next = () => {...}`，参数被静默丢弃 —— 注入从未送达模型。0.4.1 恢复成并进 content，0.5.0 改成独立事件。
+
+## 从 0.4.2 升级到 0.5.0
+
+一次**破坏性升级**：转写的承载形态变了，两个配置项随之废弃。
+
+### 转写不再进用户消息的 content
+
+0.4.x 把转写塞进原消息的 `content`，靠浏览器端脚本事后删掉标记段。**这条路走不通** —— 标记删除有条件成立，而条件不成立时整段转写会以用户消息的形式显示在聊天界面。
+
+根因：DSH 前端把一条消息的所有 text block 拼成一个字符串渲染（`dsh-client-ui-chat/lib/client.js:6010`）。旧清理脚本假设 START/END 标记落在**同一父元素下的兄弟 text node** 里；DSH 0.2.2 起会把一段文本切成多个节点、节点之间可能夹 chip 元素（skill / 文件引用 / 密钥遮罩），于是 START 与 END 落进**不同父元素**，删除必然失效。Chrome 实测：跨父元素时清理模式为 `none`、0 节点清除、转写正文完整泄漏。生产 418 个会话、44 个转写块里 1 例命中（**2.3%**），与「偶现」吻合。
+
+现在转写独立成一条 `user/message` 事件：
+
+```json
+{
+  "role": "user",
+  "id": "<uuid>",
+  "content": [{ "type": "text", "text": "[附件：a.png，attachmentId=sha256:…]\n<转写全文>" }],
+  "source": { "kind": "auto-vision-bridge", "form": "notice", "summary": "iPhone 截图：某 App 的用量统计页" }
+}
+```
+
+- `source.kind` 不是 `"user"`，宿主对这类消息走 context 分支（`dsh-client-ui-chat/lib/client.js:11964`），**永远不是用户气泡**。
+- 形态照抄 DSH 官方的 model-selection notice（`dsh-agent/lib/index.js:208`）；`form: "notice"` 要求 `summary` 非空。
+- 模型侧照常读到它：事件即输入，`session.deriveMessages()` 走 surface fold。
+- 原消息的 `content` 保持干净 —— 只有原图和用户自己的文字。
+
+### 界面上看不到转写
+
+**转写只对模型可见，聊天界面上不会出现任何转写内容。**
+
+这不是插件的选择，是宿主的既定行为：宿主把「普通 context 消息」整类排除在可见聊天行之外（`dsh-client-ui-chat/lib/client.js:10296`）——
+
+```js
+// Exclude system prompts, ordinary Context, and permission commands from visible Chat rows.
+// Context containing tool changes retains its notice row.
+function isVisibleChatNode(node) {
+  return node.visibility === "visible" && node.kind !== "system-prompt"
+    && (node.kind !== "context" || node.data.content.some((b) => b.type === "tool-addition" || b.type === "tool-removal"))
+    && !(node.kind === "command" && node.data.name === "permission");
+}
+```
+
+所以官方那些 notice（`model-selection` / `runtime-context` / `skill-catalog` / `time-context`）在界面上**同样不显示** —— 只有含工具变更的 context 消息才留一行。实测（Chrome + 隔离 profile）：转写事件确实进了前端快照（seq 11，`source.kind = "auto-vision-bridge"`），但聊天行里没有它。
+
+要让它在界面上可见，插件得自绘一行（`exclusive: true` 的 conversation Definition + 自己的 `conversation.chat.node` 渲染器，官方 `dsh-client-ui-user-questions` 就是这么做的）。0.5.0 不做这件事。
+
+**这一节存在的意义**：把「转写为什么不见了」说清楚。0.4.x 时转写并进原消息的 content，界面上能看到正文，但那正是转写正文泄漏进用户气泡的根源。现在正文彻底不在界面上，泄漏也就不可能发生。
+
+想看转写原文，用 `inspect_image` 工具重新识别（模型自己会调），或在会话日志里查那条 `user/message` 事件。
+
+### 废弃的两个配置项
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| `dumpThreshold` | **0.5.0 已移除** | 只服务于「超长转写落盘并截断」。转写不再截断、不再落盘，该项失去意义。 |
+| `summaryLength` | **0.5.0 已移除** | 只服务于「截断后留在上下文里的摘要长度」。同上。 |
+
+**旧配置里残留的值会被 Schemastery 静默忽略、不报错**，升级不需要先改配置文件。schema 里已无这两个字段。
+
+### 不再截断、不再落盘
+
+转写全文直接进事件。实测 44 个转写块**中位 870 字符、平均 1303、最大 7173** —— token 成本可忽略（单张约 400 token），而截断会让模型只拿到头尾摘要、漏掉中段细节，白白再调一次 `inspect_image`。
+
+`inspect_image` 工具侧同理：结果项不再有 `file` 字段，渲染文本里也不再提全文路径。
+
+### 旧会话仍由浏览器端脚本清理
+
+新消息不再带标记。v0.2.x 至 v0.4.x 落盘的消息里还留着成对的标记段，仍由浏览器端脚本清理 —— 算法已重写为**文档序两遍法**：
+
+- 旧算法：只认同一父元素下的兄弟节点，跨父元素时静默放弃。
+- 新算法：第一遍按文档序找 END 所在节点，**找不到就什么都不删**（宁可留着，也不猜着删用户文字）；第二遍从 START 清到 END，START 之前与 END 之后的用户文字原样保留。
+
+### 顺带清掉的死代码
+
+- `lib/transcript-store.js`（落盘与截断）、`lib/transcription.js`（基于失效的 `llm/stream` 注入的转写字段）已删除。
+- `lib/bridge.js` 里的 `attachModelSideInjection` 已删除：它靠 `llm/stream` waterfall 的 `next({...options, messages})` 注入，而 cordis 的 waterfall 里 `next` 是**无参闭包**，实参被静默丢弃（`cordis/lib/index.js:903`），这段注入**从未生效**。
+- `repairLoggedImages` 现在先对 `sessionEvents()` 的结果**复制一份**再遍历。写回会 append 新事件，若宿主返回活数组，遍历会追着自己 append 的事件跑成死循环。
+
+### 升级后应观察到
+
+发图后聊天界面上**不会多出任何东西**（没有转写正文，也没有任何转写卡片）；模型第一轮仍能直接说出图里的内容。
 
 ## 从 0.4.1 升级到 0.4.2
 
@@ -55,15 +137,15 @@ z.object({ a: z.number().default(7) }).volatile()({}) // => {}    ← 默认值�
 | `retries` | 0 | **1** |
 | `retryDelayMs` | 1000 | **500** |
 | `maxConcurrent` | 4 | **6** |
-| `dumpThreshold` | 500 | **4000** |
-| `summaryLength` | 400 | **2000** |
+| `dumpThreshold` | 500 | **4000**（0.5.0 已移除） |
+| `summaryLength` | 400 | **2000**（0.5.0 已移除） |
 
 两条改动值得单独说：
 
 - **`timeoutMs` 60s → 180s**：视觉请求实测成功耗时 15.5–117.2 秒（1320×2868 的截图尤其慢），60 秒会稳定卡掉大图。
 - **`dumpThreshold` 500 → 4000**：一张手机截图的转写实测 2000–3000 字符。阈值 500 意味着几乎每张截图都被截成 400 字摘要，模型只剩头尾、中段细节全丢，只能再调一次 `inspect_image` 重看原图——白白多花一次完整视觉请求。
 
-**升级前请检查**：如果你在自己的配置里显式写过 `timeoutMs: 60000` 或 `dumpThreshold: 500`，它们会覆盖新默认值，需要手动删掉或改成新档位。
+**升级前请检查**：如果你在自己的配置里显式写过 `timeoutMs: 60000` 或 `dumpThreshold: 500`，它们会覆盖新默认值，需要手动删掉或改成新档位。（`dumpThreshold` / `summaryLength` 已在 0.5.0 移除，写了也会被静默忽略。）
 
 ### 默认提示词
 
@@ -79,6 +161,8 @@ z.object({ a: z.number().default(7) }).volatile()({}) // => {}    ← 默认值�
 
 实测一次转写 19.4 秒，未触发落盘（全文进上下文），模型也没有回退去调 `inspect_image`。
 
+（0.5.0 起不再有落盘与截断，全文直接进会话事件。）
+
 ## 从 0.4.0 升级到 0.4.1
 
 修一个自 v0.3.0 起就存在的缺陷：自动转写识别照常执行、结果却从未送达模型。
@@ -86,6 +170,8 @@ z.object({ a: z.number().default(7) }).volatile()({}) // => {}    ← 默认值�
 **根因**：v0.3.0 为了不让转写污染用户气泡，把转写从 `content` 移到消息的 `transcription` 字段，改由 `llm/stream` 钩子注入模型侧。但 cordis 的 waterfall 里 `next` 是 `const next = () => {...}`，**参数被静默丢弃**，注入从未生效。表现：模型收到的是 DSH 宿主的占位符（只有 8 位短 ID），只能退回去调 `inspect_image` 看图。
 
 **改法**：`bridgeMessages` 增加 `embedInContent` 选项 —— 模型侧（默认）把转写块并回 `content`，紧跟对应图片之后；写回会话存储时仍只挂 `transcription` 字段，气泡保持干净。
+
+（0.5.0 起 `embedInContent` 与 `transcription` 字段一并作废，转写改成独立事件。）
 
 **升级后应观察到**：发图后模型第一轮就能说出图里的内容，不再先调一次 `inspect_image`。
 
@@ -107,9 +193,9 @@ z.object({ a: z.number().default(7) }).volatile()({}) // => {}    ← 默认值�
 
 | 变化 | 项 | 说明 |
 |---|---|---|
-| **移除** | `maxTokens` | 该项实际不生效（上游只认 `max_tokens`，插件链路发的是 `max_completion_tokens`，会被忽略），已删除。**旧配置里残留的值会被静默忽略，不会报错。** 输出长度改由 `dumpThreshold` / `summaryLength` 控制。 |
-| **新增** | `dumpThreshold` | 转写超过这个字符数才落盘并截断；`0` 表示完全不截断。默认值见当前版本（早期版本是 500）。 |
-| **新增** | `summaryLength` | 默认 400。截断后留在上下文里的摘要长度（字符），头尾各半。 |
+| **移除** | `maxTokens` | 该项实际不生效（上游只认 `max_tokens`，插件链路发的是 `max_completion_tokens`，会被忽略），已删除。**旧配置里残留的值会被静默忽略，不会报错。** 输出长度改由 `dumpThreshold` / `summaryLength` 控制（这两项 0.5.0 也已移除）。 |
+| **新增** | `dumpThreshold` | 转写超过这个字符数才落盘并截断；`0` 表示完全不截断。默认值见当前版本（早期版本是 500）。**0.5.0 已移除。** |
+| **新增** | `summaryLength` | 默认 400。截断后留在上下文里的摘要长度（字符），头尾各半。**0.5.0 已移除。** |
 | **新增** | `failureThreshold` | 默认 3。同一模型连续失败多少次后熔断；`0` 表示不熔断。 |
 | **新增** | `cooldownMs` | 默认 60000。熔断后的冷却时长（毫秒）。 |
 | **新增** | `retries` / `retryDelayMs` | 默认 0 / 1000。识图失败重试次数与退避基数。 |
@@ -125,10 +211,12 @@ z.object({ a: z.number().default(7) }).volatile()({}) // => {}    ← 默认值�
 
 ```json
 [
-  { "index": 0, "source": "path", "id": "/tmp/a.png", "ok": true, "text": "识别内容", "file": null },
+  { "index": 0, "source": "path", "id": "/tmp/a.png", "ok": true, "text": "识别内容" },
   { "index": 1, "source": "attachmentId", "id": "sha256:…", "ok": false, "error": "失败说明" }
 ]
 ```
+
+（0.2.0 的返回项还带 `file` 字段（落盘全文路径）；0.5.0 起不再落盘，该字段已删除。）
 
 **依赖旧返回值的调用方需要改**：把 `result` 改成 `result[0].text`（或遍历数组）。
 
@@ -161,10 +249,11 @@ auto-vision-bridge:
   maxConcurrent: 6            # 单条消息里同时识图的图片数量上限
   failureThreshold: 3         # 同一模型连续失败多少次后熔断；0 表示不熔断
   cooldownMs: 60000           # 熔断后的冷却时长（毫秒）
-  dumpThreshold: 4000         # 转写超过多少字符才落盘并截断；0 表示不截断
-  summaryLength: 2000         # 截断后留在上下文里的摘要长度（字符）
+  historyRetentionDays: 7     # 识图历史保留天数；0 表示不清理
   pool: []                    # 识图模型池，默认留空；安装后在设置页中从 DSH 实时模型目录添加
 ```
+
+> `dumpThreshold` / `summaryLength` 已在 0.5.0 移除，schema 里已无这两个字段。旧配置里残留的值会被 Schemastery 静默忽略、不报错。
 
 ### 默认转写提示词
 
@@ -182,7 +271,7 @@ auto-vision-bridge:
 6. 最后一行以「摘要：」开头，用不超过 50 字概括整张图的主题。
 ```
 
-第 1 条和第 6 条是有针对性的：视觉模型习惯先复述一遍任务（「The user wants me to…」「Let me transcribe…」），那几段既不是识别结果，又会在转写超阈值时把真正的内容挤出保留区 —— 插件的 `stripModelPrelude` 会剥掉它们，但少生成更省 token。第 6 条要求摘要落在**末尾**：截断策略保留头尾，摘要正好落在保留下来的那一头。
+第 1 条和第 6 条是有针对性的：视觉模型习惯先复述一遍任务（「The user wants me to…」「Let me transcribe…」），那几段既不是识别结果，又是白花 token —— 插件的 `stripModelPrelude` 会剥掉它们，但少生成更省。第 6 条要求摘要落在**末尾**：转写全文直接进事件，摘要紧跟在正文之后，模型读到最后就能拿到整张图的主题。
 
 若通过配置文件手动配置模型池，格式如下：
 
@@ -202,18 +291,20 @@ auto-vision-bridge:
 - **优先级分层**：每个条目可单独配置 `priority`（整数，最小 1，数字越小越优先，默认 1）。识别请求优先派发给优先级数字更小的模型；只有当高优先级层的条目全部满载时才降级到下一层，同层内仍按占用轮转。全部条目优先级相同时，行为与纯轮转一致。
 - **模态声明前置要求**：DSH 宿主在向模型发送图片前会核验其输入模态。若选用的模型在设置页标有「需声明支持图片」，需先在「设置 → 模型」对应的提供方配置中，给该模型声明 `input: [text, image]`，否则宿主在发请求前会把图片投影为纯文本占位符。
 
-### 长转写的落盘与截断
+### 转写的承载形态
 
-识图模型有时会输出很长的描述（逐像素讲解、任务复述），而转写块是要塞进主模型上下文的：太长既烧 token 又挤占上下文窗口。
+识图模型有时会输出很长的描述（逐像素讲解、任务复述）。转写全文直接进会话事件，不截断、不落盘。
 
-> **输出长度由这里控制，不靠 `max_tokens`。** 插件不再提供「最大输出 Token」设置项：请求里的 `max_tokens` 字段只有部分上游认（OpenAI 兼容服务常只认 `max_completion_tokens`，反过来忽略 `max_tokens`），指望它裁剪并不可靠。下面的落盘截断完全在插件内部完成，到哪个上游都生效。
+- **独立事件**：每张图一条 `user/message`，`source` 为 `{ kind: "auto-vision-bridge", form: "notice", summary }`。宿主对 `source.kind !== "user"` 的消息走 context 分支（`dsh-client-ui-chat/lib/client.js:11964`），**不是用户气泡**；而普通 context 消息在界面上不渲染（见「界面上看不到转写」）。
+- **模型照常读到**：事件即输入，`session.deriveMessages()` 走 surface fold，模型第一轮就能拿到文字，不必再调 `inspect_image`。
+- **原消息保持干净**：`content` 里只有原图与用户自己的文字。转写正文永远不会出现在用户气泡或会话标题里。
+- **形态照抄官方 notice**：`dsh-agent/lib/index.js:208` 的 model-selection notice 就是这个形状。`form: "notice"` 要求 `summary` 非空；摘要取转写的第一行，按官方上限 120 字符截断。
+- **不靠 `max_tokens` 控制长度**：插件不提供「最大输出 Token」设置项 —— 请求里的 `max_tokens` 字段只有部分上游认（OpenAI 兼容服务常只认 `max_completion_tokens`，反过来忽略 `max_tokens`），指望它裁剪并不可靠。
+- **默认走 pre-step 桥接**，即上面这套「独立事件」的形态。另有 `providerBridge` 这条可选路径（默认关闭）：它在包装 provider 的 adapter 里做**请求期替换** —— 图片块在发往真实 provider 前就地换成 text 块，会话存储完全不碰，因此用户气泡同样干净，但转写不进会话事件、也不会出现在历史消息里。开启它必须把模型路由切到 `providerBridge.providerId`，否则不生效；注册失败（如 `llm.registerAdapter` 不可用、`providerId` 与 `innerProvider` 相同）时自动回退到 pre-step 桥接。
 
-- **超过阈值才处理**：转写字符数不超过 `dumpThreshold`（默认 4000）时，原样进上下文，不产生文件。
-- **超过阈值**：上下文里只留**摘要**（开头 + 结尾各一半，中间标明省略），**全文写进文件**，并把路径写进转写块，主模型需要细节时可以自己读。
-- **落盘位置**：系统临时目录下的 `dsh-auto-vision-bridge/`，文件名形如 `<图片名>-<内容哈希前16位>.md`。同一份转写重复落盘会覆盖同一个文件，不堆文件。
-- **摘要保留头尾**：识别结论通常在模型输出的末尾，只截开头会正好把答案切掉。摘要不保证包含全部信息——拿不到时主模型应读文件或用 `inspect_image` 复核。
-- **落盘失败不影响识图**：写文件失败时退回全文进上下文，绝不让识图结果丢失。
-- 工具侧（`inspect_image`）同样适用：结果项会带 `file` 字段给出全文路径。
+**为什么全文进上下文不截断**：实测 44 个转写块中位 870 字符、平均 1303、最大 7173 —— 单张约 400 token，成本可忽略。而截断会让模型只拿到头尾摘要、漏掉中段细节，白白再调一次 `inspect_image` 重看原图，多花一次完整视觉请求。
+
+工具侧（`inspect_image`）同样不再截断、不再落盘：结果项没有 `file` 字段，渲染文本里也不提全文路径。
 
 ### 失败熔断
 
@@ -228,18 +319,22 @@ auto-vision-bridge:
 - **状态范围**：熔断状态只存在进程内存中，重启后重新计数；配置项 `failureThreshold` 设为 0 可关闭熔断。
 - **运行期诊断**：插件导出 `diagnostics(ctx)`，返回 `{ trippedKeys(), cooldowns() }` 只读快照——当前处于冷却的条目路由键、以及每个条目的剩余冷却毫秒数与连续失败次数，用于排障「为什么某个模型突然不再被调用」。
 
-## 客户端隐藏标记协议
+## 客户端标记清理协议（兼容旧会话）
 
-**新消息不再需要这个协议**：转写自 v0.3.0 起不进用户消息的 `content`，而是另存于消息的 `transcription` 字段，发请求前才注入模型侧。因此新发的消息在 Web GUI 里没有任何标记，也不会出现转写闪现或气泡跳动。
+**这套协议现在只用于清理旧会话。** 新消息不再带任何标记：转写独立成一条会话事件（`source.kind = "auto-vision-bridge"`），界面上不显示它，压根不进用户气泡。标记常量仍保留在代码里，用于认出「这张图已经转写过」——重开旧会话时不会为同一张图再花一次视觉请求。
 
-下面这套协议保留用于**兼容旧会话**：v0.2.x 时代已落盘的消息，content 里还留着成对的标记段。
+下面这套协议保留用于**兼容旧会话**：v0.2.0 起至 v0.4.x 落盘的消息，`content` 里还留着成对的标记段。
 
 Web 客户端在两个时机清理标记：
 
 1. 插件加载时用 `document.createTreeWalker` 扫描整个 `document.body`，就地删除所有成对的 `[start]...[end]` 文本；
-2. 挂载一个全局 `MutationObserver` 监听后续新增的 DOM 文本节点，流式更新到达时即刻清理。
-3. **跨节点清理**：DSH 0.2.2 起会把一段用户文本切成多个 `<span class="_plainRun">`（markdown 行内渲染与 `dsh-message-quotes` 都会切），`[start]` 与 `[end]` 于是落在不同的 text node 里，单节点替换删不掉。此时按「同一父元素下的兄弟节点」聚合处理，把两者之间（含）的兄弟 text node 一并清掉。
+2. 挂载一个全局 `MutationObserver` 监听后续新增的 DOM 文本节点，流式更新到达时即刻清理（节流 300ms，避免全树扫描占满主线程）。
+3. **跨节点清理（文档序两遍法）**：DSH 0.2.2 起会把一段用户文本切成多个节点，节点之间可能夹 chip 元素（skill / 文件引用 / 密钥遮罩），`[start]` 与 `[end]` 于是落在不同的父元素里 —— 早期按「同一父元素下的兄弟节点」聚合的老算法在这种情况下静默放弃，删除必然失效（Chrome 实测：清理模式 `none`、0 节点清除、转写正文完整泄漏）。
+   - 第一遍：从 `[start]` 节点起按**文档序**找第一个含 `[end]` 的 text node；**找不到就什么都不删**（宁可留着，也不猜着删用户文字）。
+   - 第二遍：从 `[start]` 清到 `[end]`，中途的 text node 内容全清（都是转写正文）；`[start]` 之前与 `[end]` 之后的用户文字原样保留。
 4. 清理后若发现用户气泡为空（仅发送图片、未附带文字），自动将该空气泡隐藏，避免在原图下方出现多余的空对话框。
+
+以上四步只作用于**旧会话**：新会话的消息里不再有标记，客户端脚本扫不到任何东西，也就什么都不做。
 
 ## 自动化测试
 
@@ -247,8 +342,11 @@ Web 客户端在两个时机清理标记：
 npm test
 ```
 
-包含 198 项独立测试，覆盖：
-- 完整与残缺标记段的精确清理，以及跨 text node 的标记段聚合清理；
+包含 188 项独立测试，覆盖：
+- 转写独立成事件：原消息 `content` 保持干净、模型侧仍能读到文字、转写每图一条且按原顺序；
+- 历史修复：原消息 `replace` 写回、转写另起一条 `append` 事件，二次扫描与重启后不重复识别；
+- 转写全文进上下文：不截断、不落盘；`notice` 摘要取第一行并按 120 字符上限截断；
+- 完整与残缺标记段的精确清理，以及跨父元素的标记段清理、找不到结束标记时不删任何内容、用户文字不被误删；
 - 附件 ID 校验：完整 64 位接受（容忍大小写/`sha256:` 前缀/空白），短前缀、空值、非 hex 一律拒绝且不读图；
 - 识图失败时把最后一次派发的路由挂到 error 上，历史里能看出是哪条路由挂了；
 - 仅图片消息的空气泡隐藏与用户文字气泡保全；
